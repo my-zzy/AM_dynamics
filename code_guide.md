@@ -1,8 +1,4 @@
-Good — this is exactly the kind of system where **code organization matters more than the math itself**. If you don’t structure it properly, it becomes impossible to debug once you plug it into MPC / RL later.
-
-I’ll walk you through a **clean architecture**, not code, so you can implement it yourself.
-
----
+# Code organization
 
 # 1. First: Think in Layers (Very Important)
 
