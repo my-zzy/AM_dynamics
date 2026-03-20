@@ -5,27 +5,23 @@ Dynamics of an aerial manipulator: a quadrotor with a 2-DOF planar arm mounted u
 
 ```
           ┌─────────────┐
-          │  Quadrotor  │   {A} platform frame
-          │   Platform  │   (x_A = forward, y_A = left, z_A = up)
-          └──────┬──────┘
+          │  Quadrotor   │   {A} platform frame
+          │   Platform   │   (x_A = forward, y_A = left, z_A = up)
+          └──────┬───────┘
                  │  mount offset [0, 0, -0.05] m
                  │
-          ┌──────┴───────┐
-          │  Arm Base {0}│   (x_0 = down, y_0 = forward, z_0 = joint axis)
-          └──────┬───────┘
-                 │  Joint 1 (θ₁, rotates about z_0)
+          Frame {0} ── Fixed arm base (does NOT rotate)
+          Frame {1} ── Joint 1 body frame (same origin, rotated by θ₁ about z)
                  │
            Link 1 │ 0.25 m along x_1
+                 │  COM at +0.125 along x_1
                  │
-          ┌──────┴───────┐
-          │  Frame {1}   │
-          └──────┬───────┘
-                 │  Joint 2 (θ₂, rotates about z_1)
+          Frame {2} ── Joint 2 body frame (rotated by θ₂ about z)
                  │
            Link 2 │ 0.20 m along x_2
+                 │  COM at +0.10 along x_2
                  │
-              [End-effector]
-              Frame {2}
+          Frame {3} ── End-effector
 ```
 
 ## Coordinate Frames
@@ -41,60 +37,85 @@ Dynamics of an aerial manipulator: a quadrotor with a 2-DOF planar arm mounted u
 - **Orientation**: Represented by unit quaternion q_A = [q_x, q_y, q_z, q_w]^T
 - **Relation to {W}**: R_A = rotation matrix from quaternion, p_A = platform position in world
 
-### Arm Base Frame {0}
-- **Origin**: Bottom center of platform, 5 cm below platform COM
+### Frame {0} (Fixed arm base)
+- **Origin**: Bottom center of platform, 5 cm below platform COM (mount point)
 - **Axes** (in platform frame coordinates):
   - x_0 = [0, 0, -1]_A (pointing down)
   - y_0 = [1, 0, 0]_A  (pointing forward, same as x_A)
-  - z_0 = [0, -1, 0]_A (pointing right)
-- **Relation to {A}**: Fixed transform
+  - z_0 = [0, -1, 0]_A (pointing right — joint rotation axis)
+- **Relation to {A}**: Fixed transform (does NOT rotate with the arm)
   - p_mount = [0, 0, -0.05]^T in {A}
   - R_mount maps {0} axes to {A} axes
-- **Why this orientation**: Joint axes (z_0) are horizontal. x_0 = down means θ = 0 → arm hangs straight down. +θ swings the arm forward.
+- **Why this orientation**: z_0 is horizontal → joints rotate in a vertical plane. x_0 = down → θ = 0 means arm hangs straight down.
 
-### Joint Frames {1}, {2} (Craig DH convention)
+### Frame {1} (Link 1 body frame)
+- **Origin**: Same as frame {0} (coincident origins)
+- **Axes**: Rotated from {0} by θ₁ about z_0
+  - x_1 along link 1 (at θ₁=0: same as x_0, pointing down)
+  - z_1 = z_0 (joint axis preserved, α = 0)
+- **Body frame**: Rotates with link 1
+- **COM of link 1**: [+0.125, 0, 0] in frame {1} (midpoint of link 1, positive along x_1)
 
-| Frame | Origin | x-axis | z-axis |
-|-------|--------|--------|--------|
-| {1} | Joint 2 location | Along link 1 (at θ₁=0: same as x_0) | Parallel to z_0 (joint 2 axis) |
-| {2} | End-effector | Along link 2 (at θ₂=0: same as x_1) | Parallel to z_1 |
+### Frame {2} (Link 2 body frame)
+- **Origin**: End of link 1, 0.25 m along x_1 from frame {1}
+- **Axes**: Rotated from {1} by θ₂ about z_1
+  - x_2 along link 2 (at θ₂=0: same as x_1)
+  - z_2 = z_1 (joint axis preserved, α = 0)
+- **Body frame**: Rotates with link 2
+- **COM of link 2**: [+0.10, 0, 0] in frame {2} (midpoint of link 2, positive along x_2)
 
-DH parameters (Craig convention):
+### Frame {3} (End-effector)
+- **Origin**: End of link 2, 0.20 m along x_2 from frame {2}
+- **Axes**: Same as frame {2} (no joint, fixed extension)
 
-| Joint | α | a (m) | d (m) | θ |
-|-------|---|-------|-------|---|
-| 1 | 0 | 0.25 | 0 | θ₁ |
-| 2 | 0 | 0.20 | 0 | θ₂ |
+### DH Parameters (Modified DH / Craig convention)
 
-Both α = 0 → all joint axes are parallel → planar arm motion.
+Transforms are from frame {i} to {i+1}:
+
+| Transform | α | a (m) | d (m) | θ | Notes |
+|-----------|---|-------|-------|---|-------|
+| {0}→{1} | 0 | 0 | 0 | θ₁ | Pure rotation, origins coincide |
+| {1}→{2} | 0 | 0.25 | 0 | θ₂ | Link 1 geometry (a = L₁) |
+| {2}→{3} | 0 | 0.20 | 0 | 0 | Link 2 geometry (a = L₂), no joint |
+
+All α = 0 → all joint axes are parallel → planar arm motion.
+
+COM offsets (in body frame {i}):
+- Link 1: [0.125, 0, 0] in {1}
+- Link 2: [0.100, 0, 0] in {2}
 
 ## Frame Transform Chain
 
-World → Platform → Arm base → Link 1 → Link 2
+World → Platform → Frame {0} → Frame {1} → Frame {2} → Frame {3}
 
 ```
-⁰T₂ = ⁰T_A · T_mount · ⁰T₁(θ₁) · ¹T₂(θ₂)
+⁰T₃ = ⁰T_A · T_mount · ⁰T₁(θ₁) · ¹T₂(θ₂) · ²T₃
 ```
 
 Each DH transform (since α = d = 0):
 
 ```
          ┌ cosθ  -sinθ  0  a ┐
-ⁱ⁻¹Tᵢ =  │ sinθ   cosθ  0  0 │
-         │  0      0    1  0 │
-         └  0      0    0  1 ┘
+ⁱTᵢ₊₁ = │ sinθ   cosθ  0  0 │
+         │  0      0     1  0 │
+         └  0      0     0  1 ┘
 ```
+
+Note: {0}→{1} has a = 0 (pure rotation), {2}→{3} has θ = 0 (pure translation).
 
 ## Zero Configuration (all θ = 0)
 
 With identity platform orientation and platform at p_A = [0, 0, h]:
 
-| Point | World Position |
-|-------|---------------|
-| Platform COM | [0, 0, h] |
-| Arm base (frame {0}) | [0, 0, h − 0.05] |
-| Joint 2 (frame {1}) | [0, 0, h − 0.30] |
-| End-effector (frame {2}) | [0, 0, h − 0.50] |
+| Point | Frame | World Position |
+|-------|-------|---------------|
+| Platform COM | {A} | [0, 0, h] |
+| Arm base | {0} | [0, 0, h − 0.05] |
+| Link 1 body frame | {1} | [0, 0, h − 0.05] (same as {0}) |
+| Link 1 COM | — | [0, 0, h − 0.175] |
+| Link 2 body frame (joint 2) | {2} | [0, 0, h − 0.30] |
+| Link 2 COM | — | [0, 0, h − 0.40] |
+| End-effector | {3} | [0, 0, h − 0.50] |
 
 The arm hangs straight down along −z_W.
 
