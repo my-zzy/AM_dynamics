@@ -4,18 +4,21 @@
     <option gravity="0 0 -9.81" timestep="0.002"/>
 
     <visual>
-        <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3"/>
-        <quality shadowsize="4096"/>
-        <map znear="0.01"/>
+        <headlight ambient="0.15 0.15 0.15" diffuse="0.3 0.3 0.3" specular="0.0 0.0 0.0"/>
+        <quality shadowsize="8192"/>
+        <map znear="0.005" zfar="100"/>
+        <rgba haze="0.15 0.25 0.35 1"/>
     </visual>
 
     <asset>
-        <texture name="grid" type="2d" builtin="checker" width="512" height="512"
-                 rgb1="0.4 0.4 0.4" rgb2="0.5 0.5 0.5"/>
-        <material name="grid_mat" texture="grid" texrepeat="8 8" texuniform="true"
-                  reflectance="0.1"/>
-        <!-- <texture name="sky" type="skybox" builtin="gradient"
-                 rgb1="0.6 0.8 1.0" rgb2="0.15 0.3 0.6" width="512" height="512"/> -->
+        <!-- Fine grid floor — tight spacing helps perceive height and lateral speed -->
+        <texture name="grid" type="2d" builtin="checker" width="1024" height="1024"
+                 rgb1="0.85 0.85 0.85" rgb2="0.65 0.65 0.65"/>
+        <material name="grid_mat" texture="grid" texrepeat="20 20" texuniform="true"
+                  reflectance="0.05"/>
+        <!-- Sky gradient: bright horizon → deep blue zenith -->
+        <texture name="sky" type="skybox" builtin="gradient"
+                 rgb1="0.75 0.88 1.0" rgb2="0.08 0.18 0.45" width="512" height="512"/>
     </asset>
 
     <default>
@@ -28,16 +31,26 @@
 
     <worldbody>
 
-        <!-- Ground -->
-        <geom name="ground" type="plane" size="5 5 0.1" rgba="0.9 0.9 0.9 1"/>
+        <!-- Ground: fine grid gives strong height/speed perception cues -->
+        <geom name="ground" type="plane" size="30 30 0.1" material="grid_mat"/>
 
-        <!-- Camera -->
-        <camera name="track" mode="trackcom" pos="1.5 -1.5 1.5" xyaxes="1 1 0 -0.5 0.5 1"/>
-        <camera name="fixed" pos="1.5 1.5 1.0" xyaxes="-1 1 0 -0.5 -0.5 1"/>
+        <!-- Height reference poles at 1 m intervals -->
+        <!-- <geom type="cylinder" pos="3 0 1"   size="0.02 1"   rgba="1 0.3 0.3 0.6"/>
+        <geom type="cylinder" pos="3 0 3"   size="0.02 1"   rgba="1 0.6 0.0 0.6"/>
+        <geom type="cylinder" pos="3 0 5"   size="0.02 1"   rgba="0.3 1 0.3 0.6"/> -->
+        <!-- 1m / 3m / 5m band labels baked into colours (red/orange/green) -->
 
-        <!-- Lights -->
-        <!-- <light pos="0 -2 3" dir="0 0.3 -1" diffuse="0.8 0.8 0.8" castshadow="true"/> -->
-        <light pos="0 0 2"/>
+        <!-- Cameras -->
+        <camera name="track" mode="trackcom" pos="3 -3 2" xyaxes="1 1 0 -0.4 0.4 1"/>
+        <camera name="side"  mode="trackcom" pos="0 -5 1.5" xyaxes="1 0 0 0 0.3 1"/>
+        <camera name="fixed" pos="4 4 3" xyaxes="-1 1 0 -0.5 -0.5 1"/>
+
+        <!-- Sun-like directional light with shadows -->
+        <light name="sun" pos="5 -5 10" dir="-0.4 0.4 -1"
+               diffuse="0.9 0.85 0.75" specular="0.2 0.2 0.2" castshadow="true"/>
+        <!-- Soft fill light, no shadow -->
+        <light name="fill" pos="-5 5 6" dir="0.4 -0.4 -1"
+               diffuse="0.3 0.35 0.45" specular="0 0 0" castshadow="false"/>
 
         <!-- Target marker -->
         <!-- <site name="target" pos="0 0 0.25" size="0.03" rgba="0 1 0 0.5" type="sphere"/> -->
