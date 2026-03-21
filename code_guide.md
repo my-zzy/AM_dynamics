@@ -1,4 +1,4 @@
-# Code organization
+# Code Organization
 
 # 1. First: Think in Layers (Very Important)
 
