@@ -13,8 +13,8 @@
     <asset>
         <!-- Fine grid floor — tight spacing helps perceive height and lateral speed -->
         <texture name="grid" type="2d" builtin="checker" width="1024" height="1024"
-                 rgb1="0.85 0.85 0.85" rgb2="0.65 0.65 0.65"/>
-        <material name="grid_mat" texture="grid" texrepeat="20 20" texuniform="true"
+                 rgb1="0.45 0.45 0.45" rgb2="0.65 0.65 0.65"/>
+        <material name="grid_mat" texture="grid" texrepeat="5 5" texuniform="true"
                   reflectance="0.05"/>
         <!-- Sky gradient: bright horizon → deep blue zenith -->
         <texture name="sky" type="skybox" builtin="gradient"
@@ -46,11 +46,14 @@
         <camera name="fixed" pos="4 4 3" xyaxes="-1 1 0 -0.5 -0.5 1"/>
 
         <!-- Sun-like directional light with shadows -->
-        <light name="sun" pos="5 -5 10" dir="-0.4 0.4 -1"
-               diffuse="0.9 0.85 0.75" specular="0.2 0.2 0.2" castshadow="true"/>
-        <!-- Soft fill light, no shadow -->
-        <light name="fill" pos="-5 5 6" dir="0.4 -0.4 -1"
-               diffuse="0.3 0.35 0.45" specular="0 0 0" castshadow="false"/>
+        <light name="main_light"
+           pos="0 0 5"
+           dir="0 0 -1"
+           diffuse="0.8 0.8 0.8"
+           specular="0.5 0.5 0.5"
+           ambient="0.2 0.2 0.2"
+           directional="true"
+           castshadow="true"/>
 
         <!-- Target marker -->
         <!-- <site name="target" pos="0 0 0.25" size="0.03" rgba="0 1 0 0.5" type="sphere"/> -->
@@ -107,12 +110,45 @@
                     <geom name="link2_geom" type="capsule" fromto="0 0 0 0.16 0 0"
                           size="0.012" rgba="0.2 0.8 0.2 1" mass="0"/>
 
-                    <!-- End effector -->
+                    <!-- ===== Gripper ===== -->
                     <body name="ee" pos="0.16 0 0">
-                        <geom name="ee_geom" type="sphere" size="0.025"
-                              rgba="0.9 0.9 0.1 1" mass="0.1"/>
-                        <site name="end_effector" pos="0 0 0" size="0.015"
-                              rgba="1 0 0 0.8" type="sphere"/>
+                        <inertial pos="0 0 0" mass="0.05"
+                                  diaginertia="0.00005 0.00008 0.00008"/>
+
+                        <!-- Palm -->
+                        <geom name="palm_geom" type="box" size="0.02 0.032 0.015"
+                              rgba="0.25 0.25 0.25 1"
+                              friction="1.0 0.05 0.005"/>
+
+                        <!-- Left finger: slides along y-axis, range 0=open → -0.024=closed -->
+                        <body name="finger_left" pos="0.02 0.026 0">
+                            <joint name="gripper_left_joint" type="slide" axis="0 1 0"
+                                   range="-0.024 0" damping="2.0"/>
+                            <inertial pos="0.028 0 0" mass="0.025"
+                                      diaginertia="0.000010 0.000015 0.000015"/>
+                            <geom name="finger_left_geom" type="capsule"
+                                  fromto="0 0 0 0.058 0 0" size="0.008"
+                                  rgba="0.75 0.38 0.1 1"
+                                  friction="1.8 0.12 0.01"
+                                  condim="4" solimp="0.9 0.95 0.001" solref="0.02 1"/>
+                        </body>
+
+                        <!-- Right finger: slides along y-axis, range 0=open → +0.024=closed -->
+                        <body name="finger_right" pos="0.02 -0.026 0">
+                            <joint name="gripper_right_joint" type="slide" axis="0 1 0"
+                                   range="0 0.024" damping="2.0"/>
+                            <inertial pos="0.028 0 0" mass="0.025"
+                                      diaginertia="0.000010 0.000015 0.000015"/>
+                            <geom name="finger_right_geom" type="capsule"
+                                  fromto="0 0 0 0.058 0 0" size="0.008"
+                                  rgba="0.75 0.38 0.1 1"
+                                  friction="1.8 0.12 0.01"
+                                  condim="4" solimp="0.9 0.95 0.001" solref="0.02 1"/>
+                        </body>
+
+                        <!-- Site between fingertips -->
+                        <!-- <site name="end_effector" pos="0.078 0 0" size="0.008"
+                              rgba="1 0 0 0.8" type="sphere"/> -->
                     </body>
                 </body>
             </body>
@@ -122,9 +158,12 @@
     </worldbody>
 
     <!-- Actuators: joint motors; platform force/torque via xfrc_applied -->
+    <!-- Gripper convention (prismatic): gripper_left ctrl < 0 = close; gripper_right ctrl > 0 = close -->
     <actuator>
-        <motor name="joint1_torque" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
-        <motor name="joint2_torque" joint="joint2" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+        <motor name="joint1_torque"  joint="joint1"              gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+        <motor name="joint2_torque"  joint="joint2"              gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+        <motor name="gripper_left"   joint="gripper_left_joint"  gear="1" ctrllimited="true" ctrlrange="-10 1"/>
+        <motor name="gripper_right"  joint="gripper_right_joint" gear="1" ctrllimited="true" ctrlrange="-1 10"/>
     </actuator>
 
 </mujoco>
