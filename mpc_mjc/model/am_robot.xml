@@ -146,9 +146,9 @@
                                   condim="4" solimp="0.9 0.95 0.001" solref="0.02 1"/>
                         </body>
 
-                        <!-- Site between fingertips -->
-                        <!-- <site name="end_effector" pos="0.078 0 0" size="0.008"
-                              rgba="1 0 0 0.8" type="sphere"/> -->
+                        <!-- Site between fingertips (transparent – used by scripts only) -->
+                        <site name="end_effector" pos="0.078 0 0" size="0.008"
+                              rgba="0 0 0 0" type="sphere"/>
                     </body>
                 </body>
             </body>

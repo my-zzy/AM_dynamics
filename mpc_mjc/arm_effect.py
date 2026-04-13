@@ -41,10 +41,19 @@ from pid_controller import DroneController
 # ─────────────────────────────────────────────────────────────────────────────
 SIM_DURATION = 20.0   # s  – total simulation time
 
-ARM_FREQ_HZ  = 0.5    # Hz – arm oscillation frequency
-ARM_AMP_DEG  = 45.0   # °  – joint-1 sweep amplitude
+# ── Arm joint waypoints (degrees) ────────────────────────────────────────────
+# Set START to the resting pose and END to the desired final pose.
+# Both joints are held at START until MOTION_START_S, then smoothly
+# driven to END over MOTION_DURATION_S seconds and held there.
+JOINT1_START_DEG  =   0.0   # joint-1 start angle  [°]
+JOINT1_END_DEG    =   -30.0   # joint-1 end   angle  [°]
+JOINT2_START_DEG  =   30.0   # joint-2 start angle  [°]
+JOINT2_END_DEG    =  30.0   # joint-2 end   angle  [°]
 
-# PD gains for arm joint tracking  (joint-1 only; joint-2 held at 0°)
+MOTION_START_S    =  5.0    # time before arm starts moving  [s]  (let drone stabilise)
+MOTION_DURATION_S = 10.0   # duration of the start→end sweep  [s]
+
+# PD gains for arm joint tracking
 ARM_KP = 4.0
 ARM_KD = 0.
 
@@ -83,9 +92,13 @@ def run():
     data.qpos[2] = HOVER_POS[2]  # start at hover height
     mujoco.mj_forward(model, data)
 
-    dt    = model.opt.timestep   # 0.002 s
-    omega = 2.0 * np.pi * ARM_FREQ_HZ
-    amp   = np.deg2rad(ARM_AMP_DEG)
+    dt = model.opt.timestep   # 0.002 s
+
+    # Pre-convert joint waypoints to radians
+    j1_start = np.deg2rad(JOINT1_START_DEG)
+    j1_end   = np.deg2rad(JOINT1_END_DEG)
+    j2_start = np.deg2rad(JOINT2_START_DEG)
+    j2_end   = np.deg2rad(JOINT2_END_DEG)
 
     # ── Log buffers ───────────────────────────────────────────────────────
     log_t      = []   # simulation time
@@ -114,14 +127,22 @@ def run():
             T, tau = ctrl.compute(pos, vel, q, omega_b, HOVER_POS, HOVER_YAW, dt)
             apply_platform_control(data, T, tau)
 
-            # ── Arm: PD tracking of sinusoidal joint-1 reference ──────
-            theta1_des     =  0.0
-            theta1_dot_des =  0.0
-            theta2_des     = amp * np.sin(omega * (t-5)) + np.deg2rad(90.)   # start arm motion at t=2 s to see initial hover response
-            theta2_dot_des = amp * omega * np.cos(omega * (t-5))
-            if t<5:
-                theta2_des = np.deg2rad(90.) * t/5  # slow ramp from 0 to 90 deg over the whole sim
-                theta2_dot_des = np.deg2rad(90.)/5
+            # ── Arm: smooth ramp from start to end angles ─────────────
+            # Normalised motion time; clamp to [0, 1]
+            t_motion = t - MOTION_START_S
+            if t_motion <= 0.0:
+                alpha, alpha_dot = 0.0, 0.0
+            elif t_motion >= MOTION_DURATION_S:
+                alpha, alpha_dot = 1.0, 0.0
+            else:
+                tn        = t_motion / MOTION_DURATION_S          # [0, 1]
+                alpha     = 3*tn**2 - 2*tn**3                     # smooth-step
+                alpha_dot = (6*tn - 6*tn**2) / MOTION_DURATION_S  # d(alpha)/dt
+
+            theta1_des     = j1_start + alpha     * (j1_end - j1_start)
+            theta1_dot_des =            alpha_dot * (j1_end - j1_start)
+            theta2_des     = j2_start + alpha     * (j2_end - j2_start)
+            theta2_dot_des =            alpha_dot * (j2_end - j2_start)
 
             theta1     = data.qpos[7]
             theta1_dot = data.qvel[6]
@@ -161,13 +182,12 @@ def run():
     ee_arr  = np.array(log_ee_pos)
     th_arr  = np.array(log_theta)
 
-    # Reference trajectory for joint-1
-    th1_ref = np.rad2deg(amp * np.sin(omega * (t_arr-2)))
-
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
     fig.suptitle(
-        'Effect of Arm Sweep on Aerial Manipulator Base  (PID hover)\n'
-        f'(Hover pos = {HOVER_POS}  |  arm ±{ARM_AMP_DEG:.0f}°  @  {ARM_FREQ_HZ} Hz)',
+        'Effect of Arm Motion on Aerial Manipulator Base  (PID hover)\n'
+        f'J1: {JOINT1_START_DEG:.0f}°→{JOINT1_END_DEG:.0f}°   '
+        f'J2: {JOINT2_START_DEG:.0f}°→{JOINT2_END_DEG:.0f}°   '
+        f'start={MOTION_START_S:.1f}s  dur={MOTION_DURATION_S:.1f}s',
         fontsize=12,
     )
 
@@ -175,7 +195,7 @@ def run():
     ax = axes[0]
     ax.plot(t_arr, pos_arr[:, 0], label='x')
     ax.plot(t_arr, pos_arr[:, 1], label='y')
-    ax.plot(t_arr, pos_arr[:, 2], label='z')
+    ax.plot(t_arr, pos_arr[:, 2]-np.ones_like(pos_arr[:, 2]), label='z')
     ax.set_ylabel('Position  (m)')
     ax.set_title('Drone Base Position')
     ax.legend(loc='upper right')
@@ -185,7 +205,7 @@ def run():
     ax = axes[1]
     ax.plot(t_arr, ee_arr[:, 0], label='x')
     ax.plot(t_arr, ee_arr[:, 1], label='y')
-    ax.plot(t_arr, ee_arr[:, 2], label='z')
+    ax.plot(t_arr, ee_arr[:, 2]-np.ones_like(pos_arr[:, 2]), label='z')
     ax.set_ylabel('Position  (m)')
     ax.set_title('End-Effector World Position')
     ax.legend(loc='upper right')
