@@ -169,7 +169,7 @@ thrust+body-torques in the MPC cost/constraints if desired.
 ### 4.1 File structure
 
 ```
-mpc_mjc/
+basic/
 ├── casadi_dynamics.py     ← NEW: all CasADi symbolic dynamics
 ├── casadi_model.py        ← NEW: MuJoCo-matched parameters (DH convention)
 ├── mjc_interface.py       ← NEW: sign flip + offset conversions

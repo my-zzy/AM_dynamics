@@ -22,8 +22,8 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-# Allow imports from mpc_mjc/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'mpc_mjc'))
+# Allow imports from basic/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'basic'))
 from test_model import get_state, apply_platform_control
 from pid_controller import DroneController
 

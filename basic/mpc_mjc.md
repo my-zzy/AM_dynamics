@@ -17,7 +17,7 @@ and validate it in MuJoCo simulation.
 ## Architecture
 
 ```
-mpc_mjc/
+basic/
 ├── model/
 │   ├── am_robot.xml          # MuJoCo MJCF model of the aerial manipulator
 │   └── meshes/               # (optional) visual meshes

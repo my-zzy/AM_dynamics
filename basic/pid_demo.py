@@ -2,7 +2,7 @@
 
 Run from workspace root:
     conda activate mjc
-    python mpc_mjc/pid_demo.py
+    python basic/pid_demo.py
 
 Waypoint sequence (each held until settled or timeout):
     1. Take off   → [0, 0, 2.0] m
@@ -19,7 +19,7 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-# Allow imports from mpc_mjc/ when running from workspace root
+# Allow imports from basic/ when running from workspace root
 sys.path.insert(0, os.path.dirname(__file__))
 from test_model import load_model, get_state, apply_platform_control
 from pid_controller import DroneController

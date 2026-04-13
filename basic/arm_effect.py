@@ -16,11 +16,11 @@ Outputs
 -------
   • Real-time MuJoCo viewer
   • After the viewer closes: three-panel matplotlib figure + PNG saved to
-    mpc_mjc/arm_effect.png
+    basic/arm_effect.png
 
 Run from workspace root:
     conda activate mjc
-    python mpc_mjc/arm_effect.py
+    python basic/arm_effect.py
 """
 
 import sys
