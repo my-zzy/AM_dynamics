@@ -128,8 +128,12 @@ class DroneController:
         roll, pitch, yaw = quat_to_euler_zyx(q_xyzw)
 
         # ---- Altitude: PID → thrust ----
-        e_z = pos_des[2] - pos[2]
-        T   = self.mg + self.pid_z.update(e_z, dt)   # gravity feedforward
+        e_z      = pos_des[2] - pos[2]
+        T_level  = self.mg + self.pid_z.update(e_z, dt)   # gravity feedforward
+        # Tilt compensation: actual vertical force = T·cos(roll)·cos(pitch)
+        # Divide by cos product so vertical component stays correct when tilted
+        cos_tilt = max(np.cos(roll) * np.cos(pitch), 0.5)   # clamp to avoid blow-up
+        T        = T_level / cos_tilt
 
         # ---- Horizontal: PD → desired tilt ----
         e_x = pos_des[0] - pos[0]
