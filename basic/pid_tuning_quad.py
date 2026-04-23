@@ -43,7 +43,7 @@ GAINS = dict(
 #  POINT-TO-POINT CONFIG
 # ===========================================================================
 P2P_START    = np.array([0.0, 0.0, 0.3])
-P2P_TARGET   = np.array([1.5, 1.5, 1.5])
+P2P_TARGET   = np.array([0.4, 1.5, 1.5])
 P2P_DURATION = 5.0   # seconds to hold target
 P2P_RAMP     = 5.0    # cosine ramp duration [s]
 
@@ -100,13 +100,13 @@ def make_log():
     return {'t': [], 'pos': [], 'pos_des': [], 'rpy': [], 'rpy_des': []}
 
 
-def log_step(log, t, x, pos_des, yaw_des=0.0):
+def log_step(log, t, x, pos_des, ctrl, yaw_des=0.0):
     roll, pitch, yaw = quat_to_euler_zyx(x[6:10])
     log['t'].append(t)
     log['pos'].append(x[:3].copy())
     log['pos_des'].append(pos_des.copy())
     log['rpy'].append(np.array([roll, pitch, yaw]))
-    log['rpy_des'].append(np.array([0.0, 0.0, yaw_des]))
+    log['rpy_des'].append(np.array([ctrl.roll_des, ctrl.pitch_des, yaw_des]))
 
 
 def plot_results(log, title='Quad PID'):
@@ -194,7 +194,7 @@ def run_p2p(model, data, ctrl, dt):
             T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, 0.0, dt)
             apply_platform_control(data, model, T, tau)
             mujoco.mj_step(model, data)
-            log_step(log, t, x, pos_des)
+            log_step(log, t, x, pos_des, ctrl)
 
             if t - last_log >= LOG_INTERVAL:
                 err   = np.linalg.norm(x[:3] - pos_des)
@@ -253,7 +253,7 @@ def run_figure8(model, data, ctrl, dt):
             T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, 0.0, dt)
             apply_platform_control(data, model, T, tau)
             mujoco.mj_step(model, data)
-            log_step(log, t, x, pos_des)
+            log_step(log, t, x, pos_des, ctrl)
 
             if t >= RAMP_DUR:
                 rmse_sum += np.sum((x[:3] - pos_des) ** 2)

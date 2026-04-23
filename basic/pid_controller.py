@@ -106,6 +106,8 @@ class DroneController:
     def reset(self):
         for pid in (self.pid_z, self.pid_roll, self.pid_pitch, self.pid_yaw):
             pid.reset()
+        self.roll_des  = 0.0
+        self.pitch_des = 0.0
 
     def compute(self, pos, vel, q_xyzw, omega, pos_des, yaw_des, dt):
         """Compute control output.
@@ -148,6 +150,9 @@ class DroneController:
         # Small-angle: a = g * tilt_angle
         pitch_des = np.clip( a_bx / self.g, -self.tilt_limit, self.tilt_limit)
         roll_des  = np.clip(-a_by / self.g, -self.tilt_limit, self.tilt_limit)
+        # Store for external logging
+        self.roll_des  = roll_des
+        self.pitch_des = pitch_des
 
         # ---- Attitude: PID → body torques ----
         tau_x = self.pid_roll.update( roll_des  - roll,               dt)

@@ -31,10 +31,10 @@ GAINS = dict(
     kp_z    = 10.0,
     ki_z    =  2.0,
     kd_z    =  6.0,
-    kp_xy   = 15.5,
-    kd_xy   =  3.0,
-    kp_rp   =  9.0,
-    ki_rp   =  0.5,
+    kp_xy   =  5.5,
+    kd_xy   =  1.0,
+    kp_rp   =  10.0,
+    ki_rp   =  4.5,
     kd_rp   =  2.5,
     kp_yaw  =  5.0,
     ki_yaw  =  0.2,
@@ -45,9 +45,10 @@ GAINS = dict(
 #  POINT-TO-POINT CONFIG
 # ===========================================================================
 P2P_START    = np.array([0.0, 0.0, 0.3])   # initial hover position  [m]
-P2P_TARGET   = np.array([1.5, 0.0, 1.5])   # desired target position [m]
-P2P_DURATION = 10.0                          # seconds to hold target after arrival
+P2P_TARGET   = np.array([0.4, 0.1, 1.5])   # desired target position [m]
+P2P_DURATION = 5.0                          # seconds to hold target after arrival
 P2P_RAMP     = 5.0                           # cosine ramp duration [s]
+P2P_YAW_TARGET = np.deg2rad(0.0)           # desired yaw at target [rad]  (0 = no yaw)
 
 # ===========================================================================
 #  FIGURE-8 CONFIG
@@ -58,6 +59,7 @@ FIG8_AMP_Y   = 0.0                           # y amplitude (0 → figure-8 in xz
 FIG8_AMP_Z   = 0.6                           # z amplitude [m]
 FIG8_PERIOD  = 12.0                          # one full cycle [s]
 FIG8_DURATION= 36.0                          # total run time [s]
+FIG8_YAW_AMP = np.deg2rad(30.0)             # yaw sine amplitude [rad]  (0 = no yaw)
 
 # ===========================================================================
 #  LOGGING / DISPLAY
@@ -99,13 +101,13 @@ def make_log():
     return {'t': [], 'pos': [], 'pos_des': [], 'rpy': [], 'rpy_des': []}
 
 
-def log_step(log, t, x, pos_des, yaw_des=0.0):
+def log_step(log, t, x, pos_des, ctrl, yaw_des=0.0):
     roll, pitch, yaw = quat_to_euler_zyx(x[6:10])
     log['t'].append(t)
     log['pos'].append(x[:3].copy())
     log['pos_des'].append(pos_des.copy())
     log['rpy'].append(np.array([roll, pitch, yaw]))
-    log['rpy_des'].append(np.array([0.0, 0.0, yaw_des]))
+    log['rpy_des'].append(np.array([ctrl.roll_des, ctrl.pitch_des, yaw_des]))
 
 
 def plot_results(log, title='PID Tuning'):
@@ -188,13 +190,14 @@ def run_p2p(model, data, ctrl, dt):
             t   = data.time - t0_sim
             s   = smooth_step(t, 0.0, P2P_RAMP)
             pos_des = P2P_START + s * (P2P_TARGET - P2P_START)
+            yaw_des = s * P2P_YAW_TARGET
 
             x   = get_state(model, data)
-            T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, 0.0, dt)
+            T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, yaw_des, dt)
             apply_platform_control(data, T, tau)
             set_arm(data, model)
             mujoco.mj_step(model, data)
-            log_step(log, t, x, pos_des)
+            log_step(log, t, x, pos_des, ctrl, yaw_des)
 
             # console log
             if t - last_log >= LOG_INTERVAL:
@@ -255,17 +258,19 @@ def run_figure8(model, data, ctrl, dt):
                 x = get_state(model, data)
                 s = smooth_step(t, 0.0, RAMP_DUR)
                 pos_des = x[:3] + s * (FIG8_CENTRE - x[:3])
+                yaw_des = 0.0
             else:
                 # Figure-8 tracking
                 t_traj  = t - RAMP_DUR
                 pos_des = figure8_setpoint(t_traj)
+                yaw_des = FIG8_YAW_AMP * np.sin(2.0 * np.pi * t_traj / FIG8_PERIOD)
 
             x   = get_state(model, data)
-            T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, 0.0, dt)
+            T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13], pos_des, yaw_des, dt)
             apply_platform_control(data, T, tau)
             set_arm(data, model)
             mujoco.mj_step(model, data)
-            log_step(log, t, x, pos_des)
+            log_step(log, t, x, pos_des, ctrl, yaw_des)
 
             # RMSE accumulation (only during tracking phase)
             if t >= RAMP_DUR:

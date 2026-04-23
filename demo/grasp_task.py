@@ -161,6 +161,62 @@ def apply_gripper(data, close=False):
         data.ctrl[CTRL_GL] = 0.0
         data.ctrl[CTRL_GR] = 0.0
 
+
+def plot_trajectories(log):
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    t     = np.array(log['t'])
+    drone = np.array(log['drone_pos'])
+    ee    = np.array(log['ee_pos'])
+    box   = np.array(log['box_pos'])
+
+    fig = plt.figure(figsize=(16, 8))
+    fig.suptitle('Grasp Task Trajectories', fontsize=13)
+    gs = gridspec.GridSpec(3, 2, figure=fig)
+
+    # 3-D trajectory (left column)
+    ax3d = fig.add_subplot(gs[:, 0], projection='3d')
+    if PLOT_DRONE:
+        ax3d.plot(drone[:, 0], drone[:, 1], drone[:, 2],
+                  color='tab:blue', linewidth=1.5, label='Drone base')
+        ax3d.scatter(*drone[0],  color='tab:blue', s=60, marker='o', zorder=5)
+        ax3d.scatter(*drone[-1], color='tab:blue', s=60, marker='x', zorder=5)
+    ax3d.plot(ee[:, 0], ee[:, 1], ee[:, 2],
+              color='tab:orange', linewidth=1.5, label='Gripper EE')
+    ax3d.scatter(*ee[0],  color='tab:orange', s=60, marker='o', zorder=5)
+    ax3d.scatter(*ee[-1], color='tab:orange', s=60, marker='x', zorder=5)
+    ax3d.plot(box[:, 0], box[:, 1], box[:, 2],
+              color='tab:green', linewidth=1.2, linestyle='--', label='Box')
+    ax3d.set_xlabel('x [m]')
+    ax3d.set_ylabel('y [m]')
+    ax3d.set_zlabel('z [m]')
+    ax3d.legend(fontsize=8)
+    ax3d.set_title('3D Trajectory  (o=start  x=end)')
+
+    # Time series (right column)
+    labels = ['x [m]', 'y [m]', 'z [m]']
+    for i in range(3):
+        ax = fig.add_subplot(gs[i, 1])
+        if PLOT_DRONE:
+            ax.plot(t, drone[:, i], color='tab:blue',   linewidth=1.2, label='Drone base')
+        ax.plot(t, ee[:, i],    color='tab:orange', linewidth=1.2, label='Gripper EE')
+        ax.plot(t, box[:, i],   color='tab:green',  linewidth=1.2, linestyle='--', label='Box')
+        ax.set_ylabel(labels[i])
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, linewidth=0.4)
+        if i == 2:
+            ax.set_xlabel('time [s]')
+
+    plt.tight_layout()
+    out_path = os.path.join(os.path.dirname(__file__), 'grasp_trajectory.png')
+    plt.savefig(out_path, dpi=150)
+    print(f'Trajectory plot saved → {out_path}')
+    try:
+        plt.show()
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # Phase timing
 # ---------------------------------------------------------------------------
@@ -195,8 +251,28 @@ HOVER = {
 BOX_TARGET = np.array([0.40, 0.0, 1.125])
 
 # ---------------------------------------------------------------------------
+# Plot flags
+# ---------------------------------------------------------------------------
+PLOT_DRONE = False    # set False to hide drone base trajectory from plots
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+GAINS = dict(
+    kp_z    = 10.0,
+    ki_z    =  2.0,
+    kd_z    =  6.0,
+    kp_xy   =  5.5,
+    kd_xy   =  1.0,
+    kp_rp   =  10.0,
+    ki_rp   =  4.5,
+    kd_rp   =  2.5,
+    kp_yaw  =  5.0,
+    ki_yaw  =  0.2,
+    kd_yaw  =  1.5,
+)
+
 
 def run_grasp():
     model, data = load_grasp_scene()
@@ -209,7 +285,7 @@ def run_grasp():
     total_mass = sum(model.body_mass[i] for i in robot_body_ids)
     print(f'Robot mass: {total_mass:.3f} kg  (mg = {total_mass*9.81:.2f} N)')
 
-    ctrl = DroneController(mass=total_mass)
+    ctrl = DroneController(mass=total_mass, **GAINS)
     dt = model.opt.timestep
 
     # Reset — place drone on the ground
@@ -241,8 +317,12 @@ def run_grasp():
 
         t0_wall = time.perf_counter()
         t0_sim = data.time
-        sim_duration = 34.0
+        sim_duration = 17.0 # 34.0
         _retract_start = np.array([0.0, 0.0])
+
+        # Trajectory logging
+        ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
+        log = {'t': [], 'drone_pos': [], 'ee_pos': [], 'box_pos': []}
 
         while data.time - t0_sim < sim_duration:
             if not viewer.is_running():
@@ -271,6 +351,12 @@ def run_grasp():
 
             st = get_grasp_state(model, data)
             phase_dt = t - phase_t0
+
+            # Record trajectory
+            log['t'].append(t)
+            log['drone_pos'].append(st['pos'].copy())
+            log['ee_pos'].append(data.site_xpos[ee_site_id].copy())
+            log['box_pos'].append(get_box_pos(model, data))
 
             # --- Phase logic ---
             gripper_close = False
@@ -368,6 +454,8 @@ def run_grasp():
         print('Close viewer to exit.')
         while viewer.is_running():
             time.sleep(0.05)
+
+    plot_trajectories(log)
 
 
 if __name__ == '__main__':
