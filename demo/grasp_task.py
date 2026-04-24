@@ -370,10 +370,10 @@ BOX_TARGET = np.array([0.40, 0.0, 1.125])
 # 'arm_only'   – drone hovers fixed (pre-approached in phase 2), arm ramps to IK
 # 'drone_only' – arm locked at S2_JOINTS, drone flies to back-computed position
 # 'hybrid'     – drone moves to HOVER[3] while arm tracks live IK  (original)
-GRASP_METHOD = 'arm_only'
+GRASP_METHOD = 'drone_only'
 
 # Fixed joint angles used by drone_only (arm pre-aimed at box)
-S2_JOINTS = np.array([-0.5, 0.8])   # [theta1, theta2] rad
+S2_JOINTS = np.array([-0.2, 0.2])   # [theta1, theta2] rad
 
 # ---------------------------------------------------------------------------
 # Plot flags
@@ -455,6 +455,8 @@ def run_grasp():
     # arm_only runtime state (filled at phase 3 transition)
     _arm_only_theta_start = np.zeros(2)
     _arm_only_theta_end   = np.zeros(2)
+    # drone_only runtime state (arm start captured at phase 2 transition)
+    _drone_only_arm_start = np.zeros(2)
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer.sync()
@@ -506,6 +508,12 @@ def run_grasp():
                     print(f'  arm_only joints: {np.rad2deg(_arm_only_theta_start)} '
                           f'→ {np.rad2deg(_arm_only_theta_end)} deg')
 
+                # drone_only: capture arm start position at phase 2 transition
+                if current_phase == 2 and GRASP_METHOD == 'drone_only':
+                    _drone_only_arm_start = st['theta'].copy()
+                    print(f'  drone_only arm ramp: {np.rad2deg(_drone_only_arm_start)} '
+                          f'→ {np.rad2deg(S2_JOINTS)} deg  (over phase 2)')
+
             st = get_grasp_state(model, data)
             phase_dt = t - phase_t0
 
@@ -535,13 +543,22 @@ def run_grasp():
                 theta_des = np.array([0.0, 0.0])
 
             elif current_phase == 2:
-                # ARM READY: arm folded; arm_only pre-approaches drone to HOVER[3]
+                # ARM READY:
+                #   arm_only  – drone pre-approaches to HOVER[3], arm stays folded
+                #   drone_only – drone holds, arm ramps to S2_JOINTS (pre-position)
+                #   hybrid    – drone holds, arm stays folded
                 if GRASP_METHOD == 'arm_only':
                     ramp_dur = 8.0
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
+                    theta_des = np.array([0.0, 0.0])
+                elif GRASP_METHOD == 'drone_only':
+                    hover_des = HOVER[2].copy()
+                    ramp_dur = 8.0
+                    theta_des = smooth_ramp(phase_dt, 0, ramp_dur,
+                                            _drone_only_arm_start, S2_JOINTS)
                 else:
                     hover_des = HOVER[2].copy()
-                theta_des = np.array([0.0, 0.0])
+                    theta_des = np.array([0.0, 0.0])
 
             elif current_phase == 3:
                 ramp_dur = 8.0
@@ -559,7 +576,7 @@ def run_grasp():
                                             _arm_only_theta_start, _arm_only_theta_end)
 
                 elif GRASP_METHOD == 'drone_only':
-                    # Arm locked at pre-aimed angles, drone flies to back-computed hover
+                    # Arm already at S2_JOINTS from phase 2; only drone moves
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, _s2_hover)
                     theta_des = S2_JOINTS.copy()
 
