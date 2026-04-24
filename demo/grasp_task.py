@@ -15,6 +15,11 @@ Phases (see demo/grasp.md for full design):
     7  PLACE       descend, open gripper
     8  RETRACT     fold arm, return home
 """
+
+## TODO:
+# edit hover setpoint beyond reach
+# arm joint tracking
+
 import sys
 import os
 import time
@@ -41,8 +46,8 @@ CTRL_GL = 2      # gripper left
 CTRL_GR = 3      # gripper right
 
 # Joint PD gains for arm position control (torque actuators)
-KP_ARM = 1.0
-KD_ARM = 0.3
+KP_ARM = 8.0
+KD_ARM = 0.8
 
 # ---------------------------------------------------------------------------
 # IK  (updated sign convention — see grasp.md)
@@ -80,6 +85,16 @@ def arm_fk(base_pos, t1, t2):
     ey = base_pos[1]
     ez = base_pos[2] - MOUNT_Z - L1 * np.cos(t1) - L2 * np.sin(t1 + t2)
     return np.array([ex, ey, ez])
+
+
+def drone_pos_from_joints(box_target, t1, t2):
+    """Back-compute drone base position so that FK(base, t1, t2) == box_target.
+
+    Inverts arm_fk analytically for x and z; y is taken from box_target.
+    """
+    base_x = box_target[0] + L1 * np.sin(t1) - L2 * np.cos(t1 + t2)
+    base_z = box_target[2] + MOUNT_Z + L1 * np.cos(t1) + L2 * np.sin(t1 + t2)
+    return np.array([base_x, box_target[1], base_z])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -144,9 +159,15 @@ def get_box_pos(model, data):
     return data.xpos[box_id].copy()
 
 
-def apply_arm_pd(data, theta_des, theta_cur, theta_dot):
-    """PD torque control for arm joints."""
+def apply_arm_pd(data, theta_des, theta_cur, theta_dot, bias=None):
+    """PD torque control for arm joints with optional gravity feedforward.
+
+    bias: array([tau_grav_j1, tau_grav_j2]) from data.qfrc_bias at joint DOFs.
+          When provided, cancels gravity/Coriolis so steady-state error → 0.
+    """
     tau = KP_ARM * (theta_des - theta_cur) - KD_ARM * theta_dot
+    if bias is not None:
+        tau = tau + bias          # gravity feedforward
     tau = np.clip(tau, -5.0, 5.0)
     data.ctrl[CTRL_J1] = tau[0]
     data.ctrl[CTRL_J2] = tau[1]
@@ -162,50 +183,143 @@ def apply_gripper(data, close=False):
         data.ctrl[CTRL_GR] = 0.0
 
 
+def plot_approach_phase(log):
+    """Dedicated 2-D xz plot for the approach phase (phase 3)."""
+    import matplotlib.pyplot as plt
+
+    t        = np.array(log['t'])
+    phases   = np.array(log['phase'])
+    drone    = np.array(log['drone_pos'])
+    ee       = np.array(log['ee_pos'])
+    hover_d  = np.array(log['hover_des'])
+
+    mask = phases == 3
+    if not np.any(mask):
+        print('No approach-phase data to plot.')
+        return
+
+    t_ap     = t[mask]
+    drone_ap = drone[mask]
+    ee_ap    = ee[mask]
+    hdes_ap  = hover_d[mask]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    fig.suptitle(f'Approach Phase  (t = {t_ap[0]:.1f} – {t_ap[-1]:.1f} s)   '
+                 f'method={GRASP_METHOD!r}', fontsize=12)
+
+    # ── Left: xz spatial plot ──────────────────────────────────────────────
+    ax = axes[0]
+    # Drone actual
+    ax.plot(drone_ap[:, 0], drone_ap[:, 2],
+            color='tab:blue', lw=1.8, label='Drone base (actual)')
+    ax.scatter(drone_ap[0, 0],  drone_ap[0, 2],  color='tab:blue', s=70,
+               marker='o', zorder=6)
+    ax.scatter(drone_ap[-1, 0], drone_ap[-1, 2], color='tab:blue', s=70,
+               marker='x', zorder=6)
+    # Drone desired
+    ax.plot(hdes_ap[:, 0], hdes_ap[:, 2],
+            color='tab:blue', lw=1.2, ls='--', label='Drone desired')
+    # EE actual
+    ax.plot(ee_ap[:, 0], ee_ap[:, 2],
+            color='tab:orange', lw=1.8, label='Gripper EE (actual)')
+    ax.scatter(ee_ap[0, 0],  ee_ap[0, 2],  color='tab:orange', s=70,
+               marker='o', zorder=6)
+    ax.scatter(ee_ap[-1, 0], ee_ap[-1, 2], color='tab:orange', s=70,
+               marker='x', zorder=6)
+    # Target
+    ax.scatter(BOX_TARGET[0], BOX_TARGET[2], color='tab:green', s=180,
+               marker='*', zorder=7, label='Box target')
+    ax.set_xlabel('x [m]')
+    ax.set_ylabel('z [m]')
+    ax.set_title('xz Trajectory  (o = start,  x = end,  -- = desired)')
+    ax.set_aspect('equal')
+    ax.legend(fontsize=9)
+    ax.grid(True, lw=0.4)
+
+    # ── Right: position vs time ────────────────────────────────────────────
+    ax = axes[1]
+    # x components
+    ax.plot(t_ap, drone_ap[:, 0], color='tab:blue',   lw=1.5, label='Drone x (actual)')
+    ax.plot(t_ap, hdes_ap[:, 0],  color='tab:blue',   lw=1.0, ls='--', label='Drone x (desired)')
+    ax.plot(t_ap, ee_ap[:, 0],    color='tab:orange', lw=1.5, label='EE x')
+    ax.axhline(BOX_TARGET[0], color='tab:green', lw=1.0, ls=':', label='Target x')
+    # z components
+    ax.plot(t_ap, drone_ap[:, 2], color='royalblue',  lw=1.5, ls='-',  label='Drone z (actual)')
+    ax.plot(t_ap, hdes_ap[:, 2],  color='royalblue',  lw=1.0, ls='--', label='Drone z (desired)')
+    ax.plot(t_ap, ee_ap[:, 2],    color='darkorange',  lw=1.5, ls='-',  label='EE z')
+    ax.axhline(BOX_TARGET[2], color='darkgreen', lw=1.0, ls=':', label='Target z')
+    ax.set_xlabel('time [s]')
+    ax.set_ylabel('position [m]')
+    ax.set_title('x and z vs time  (solid=actual  dashed=desired  dotted=target)')
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(True, lw=0.4)
+
+    plt.tight_layout()
+    out_path = os.path.join(os.path.dirname(__file__), 'approach_phase.png')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    print(f'Approach plot saved → {out_path}')
+    try:
+        plt.show()
+    except Exception:
+        pass
+
+
 def plot_trajectories(log):
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
 
-    t     = np.array(log['t'])
-    drone = np.array(log['drone_pos'])
-    ee    = np.array(log['ee_pos'])
-    box   = np.array(log['box_pos'])
+    t      = np.array(log['t'])
+    drone  = np.array(log['drone_pos'])
+    ee     = np.array(log['ee_pos'])
+    box    = np.array(log['box_pos'])
+    theta  = np.degrees(np.array(log['theta']))
+    tdes   = np.degrees(np.array(log['theta_des']))
 
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(16, 12))
     fig.suptitle('Grasp Task Trajectories', fontsize=13)
-    gs = gridspec.GridSpec(3, 2, figure=fig)
+    gs = gridspec.GridSpec(5, 2, figure=fig)
 
-    # 3-D trajectory (left column)
-    ax3d = fig.add_subplot(gs[:, 0], projection='3d')
+    # 2-D trajectory in xz-plane (left column, spans all rows)
+    ax2d = fig.add_subplot(gs[:, 0])
     if PLOT_DRONE:
-        ax3d.plot(drone[:, 0], drone[:, 1], drone[:, 2],
+        ax2d.plot(drone[:, 0], drone[:, 2],
                   color='tab:blue', linewidth=1.5, label='Drone base')
-        ax3d.scatter(*drone[0],  color='tab:blue', s=60, marker='o', zorder=5)
-        ax3d.scatter(*drone[-1], color='tab:blue', s=60, marker='x', zorder=5)
-    ax3d.plot(ee[:, 0], ee[:, 1], ee[:, 2],
+        ax2d.scatter(drone[0, 0],  drone[0, 2],  color='tab:blue', s=60, marker='o', zorder=5)
+        ax2d.scatter(drone[-1, 0], drone[-1, 2], color='tab:blue', s=60, marker='x', zorder=5)
+    ax2d.plot(ee[:, 0], ee[:, 2],
               color='tab:orange', linewidth=1.5, label='Gripper EE')
-    ax3d.scatter(*ee[0],  color='tab:orange', s=60, marker='o', zorder=5)
-    ax3d.scatter(*ee[-1], color='tab:orange', s=60, marker='x', zorder=5)
-    ax3d.plot(box[:, 0], box[:, 1], box[:, 2],
-              color='tab:green', linewidth=1.2, linestyle='--', label='Box')
-    ax3d.set_xlabel('x [m]')
-    ax3d.set_ylabel('y [m]')
-    ax3d.set_zlabel('z [m]')
-    ax3d.legend(fontsize=8)
-    ax3d.set_title('3D Trajectory  (o=start  x=end)')
+    ax2d.scatter(ee[0, 0],  ee[0, 2],  color='tab:orange', s=60, marker='o', zorder=5)
+    ax2d.scatter(ee[-1, 0], ee[-1, 2], color='tab:orange', s=60, marker='x', zorder=5)
+    ax2d.scatter(box[0, 0], box[0, 2], color='tab:green', s=120, marker='*', zorder=6, label='Box target')
+    ax2d.set_xlabel('x [m]')
+    ax2d.set_ylabel('z [m]')
+    ax2d.legend(fontsize=8)
+    ax2d.set_title('xz Trajectory  (o=start  x=end)')
+    ax2d.grid(True, linewidth=0.4)
+    ax2d.set_aspect('equal')
 
-    # Time series (right column)
-    labels = ['x [m]', 'y [m]', 'z [m]']
+    # Position time series (right column, rows 0-2)
+    pos_labels = ['x [m]', 'y [m]', 'z [m]']
     for i in range(3):
         ax = fig.add_subplot(gs[i, 1])
         if PLOT_DRONE:
             ax.plot(t, drone[:, i], color='tab:blue',   linewidth=1.2, label='Drone base')
         ax.plot(t, ee[:, i],    color='tab:orange', linewidth=1.2, label='Gripper EE')
         ax.plot(t, box[:, i],   color='tab:green',  linewidth=1.2, linestyle='--', label='Box')
-        ax.set_ylabel(labels[i])
+        ax.set_ylabel(pos_labels[i])
         ax.legend(fontsize=7, loc='upper right')
         ax.grid(True, linewidth=0.4)
-        if i == 2:
+
+    # Joint angle time series (right column, rows 3-4)
+    joint_labels = ['joint1 [deg]', 'joint2 [deg]']
+    for i in range(2):
+        ax = fig.add_subplot(gs[3 + i, 1])
+        ax.plot(t, theta[:, i], color='tab:purple', linewidth=1.2, label='actual')
+        ax.plot(t, tdes[:, i],  color='tab:red',    linewidth=1.2, linestyle='--', label='desired')
+        ax.set_ylabel(joint_labels[i])
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, linewidth=0.4)
+        if i == 1:
             ax.set_xlabel('time [s]')
 
     plt.tight_layout()
@@ -222,14 +336,14 @@ def plot_trajectories(log):
 # ---------------------------------------------------------------------------
 PHASE_TIMES = [
     (0,  5.0,  'TAKEOFF'),
-    (1,  9.0,  'INIT'),
-    (2,  13.0, 'ARM READY'),
-    (3,  17.0, 'APPROACH'),
-    (4,  19.0, 'GRASP'),
-    (5,  23.0, 'LIFT'),
-    (6,  28.0, 'TRANSPORT'),
-    (7,  30.0, 'PLACE'),
-    (8,  32.0, 'RETRACT'),
+    (1,  10.0,  'INIT'),
+    (2,  20.0, 'ARM READY'),
+    (3,  30.0, 'APPROACH'),
+    (4,  35.0, 'GRASP'),
+    (5,  40.0, 'LIFT'),
+    (6,  45.0, 'TRANSPORT'),
+    (7,  50.0, 'PLACE'),
+    (8,  55.0, 'RETRACT'),
 ]
 
 # z-height of base when resting on the ground (feet at z=-0.212 from base)
@@ -249,6 +363,17 @@ HOVER = {
 }
 
 BOX_TARGET = np.array([0.40, 0.0, 1.125])
+
+# ---------------------------------------------------------------------------
+# Approach method
+# ---------------------------------------------------------------------------
+# 'arm_only'   – drone hovers fixed (pre-approached in phase 2), arm ramps to IK
+# 'drone_only' – arm locked at S2_JOINTS, drone flies to back-computed position
+# 'hybrid'     – drone moves to HOVER[3] while arm tracks live IK  (original)
+GRASP_METHOD = 'arm_only'
+
+# Fixed joint angles used by drone_only (arm pre-aimed at box)
+S2_JOINTS = np.array([-0.5, 0.8])   # [theta1, theta2] rad
 
 # ---------------------------------------------------------------------------
 # Plot flags
@@ -288,6 +413,10 @@ def run_grasp():
     ctrl = DroneController(mass=total_mass, **GAINS)
     dt = model.opt.timestep
 
+    # Precompute joint DOF addresses for gravity feedforward
+    _j1_dof = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')]
+    _j2_dof = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
+
     # Reset — place drone on the ground
     mujoco.mj_resetData(model, data)
     base_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'free_joint')
@@ -312,17 +441,33 @@ def run_grasp():
     print(f'Phase 3 IK: theta1={np.rad2deg(ik_phase3[0]):.1f}°  theta2={np.rad2deg(ik_phase3[1]):.1f}°')
     print(f'Phase 3 FK check: EE = {ee3}  (target: {BOX_TARGET})')
 
+    # Method-specific pre-computation
+    print(f'\nGRASP_METHOD = {GRASP_METHOD!r}')
+    if GRASP_METHOD == 'drone_only':
+        _s2_hover = drone_pos_from_joints(BOX_TARGET, S2_JOINTS[0], S2_JOINTS[1])
+        ee_s2 = arm_fk(_s2_hover, S2_JOINTS[0], S2_JOINTS[1])
+        print(f'  S2_JOINTS = [{np.rad2deg(S2_JOINTS[0]):.1f}°, {np.rad2deg(S2_JOINTS[1]):.1f}°]')
+        print(f'  computed hover = {_s2_hover}')
+        print(f'  FK check EE = {ee_s2}  (target: {BOX_TARGET})')
+    else:
+        _s2_hover = HOVER[3].copy()   # unused placeholder
+
+    # arm_only runtime state (filled at phase 3 transition)
+    _arm_only_theta_start = np.zeros(2)
+    _arm_only_theta_end   = np.zeros(2)
+
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer.sync()
 
         t0_wall = time.perf_counter()
         t0_sim = data.time
-        sim_duration = 17.0 # 34.0
+        sim_duration = 50.0
         _retract_start = np.array([0.0, 0.0])
 
         # Trajectory logging
         ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
-        log = {'t': [], 'drone_pos': [], 'ee_pos': [], 'box_pos': []}
+        log = {'t': [], 'drone_pos': [], 'ee_pos': [], 'box_pos': [],
+               'theta': [], 'theta_des': [], 'hover_des': [], 'phase': []}
 
         while data.time - t0_sim < sim_duration:
             if not viewer.is_running():
@@ -349,6 +494,18 @@ def run_grasp():
                 # Override y to 0 (we only move in xz)
                 hover_prev[1] = 0.0
 
+                # arm_only: lock in IK target once at phase 3 start
+                if current_phase == 3 and GRASP_METHOD == 'arm_only':
+                    ik_ao = arm_ik(hover_prev, BOX_TARGET)
+                    if ik_ao is None:
+                        print('  WARNING: arm_only IK unreachable — drone too far from box')
+                    else:
+                        _arm_only_theta_end = np.array(ik_ao)
+                    _arm_only_theta_start = st['theta'].copy()
+                    print(f'  hover point: {hover_prev} box target: {BOX_TARGET}')
+                    print(f'  arm_only joints: {np.rad2deg(_arm_only_theta_start)} '
+                          f'→ {np.rad2deg(_arm_only_theta_end)} deg')
+
             st = get_grasp_state(model, data)
             phase_dt = t - phase_t0
 
@@ -357,6 +514,10 @@ def run_grasp():
             log['drone_pos'].append(st['pos'].copy())
             log['ee_pos'].append(data.site_xpos[ee_site_id].copy())
             log['box_pos'].append(get_box_pos(model, data))
+            log['theta'].append(st['theta'].copy())
+            log['theta_des'].append(theta_des.copy())
+            log['hover_des'].append(hover_des.copy())
+            log['phase'].append(current_phase)
 
             # --- Phase logic ---
             gripper_close = False
@@ -374,23 +535,37 @@ def run_grasp():
                 theta_des = np.array([0.0, 0.0])
 
             elif current_phase == 2:
-                # ARM READY: hold arm at initial (L-config) angles, open gripper
-                hover_des = HOVER[2].copy()
+                # ARM READY: arm folded; arm_only pre-approaches drone to HOVER[3]
+                if GRASP_METHOD == 'arm_only':
+                    ramp_dur = 8.0
+                    hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
+                else:
+                    hover_des = HOVER[2].copy()
                 theta_des = np.array([0.0, 0.0])
 
             elif current_phase == 3:
-                # APPROACH: translate drone, ramp arm to box-level IK
-                ramp_dur = 3.0
-                hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
-                # Recompute IK dynamically based on current base position
-                ik_live = arm_ik(st['pos'], BOX_TARGET)
-                if ik_live is not None:
-                    theta_des = np.array(ik_live)
-                # else hold previous
+                ramp_dur = 8.0
+                if GRASP_METHOD == 'hybrid':
+                    # Drone moves to HOVER[3], arm tracks live IK simultaneously
+                    hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
+                    ik_live = arm_ik(st['pos'], BOX_TARGET)
+                    if ik_live is not None:
+                        theta_des = np.array(ik_live)
+
+                elif GRASP_METHOD == 'arm_only':
+                    # Drone holds position, arm ramps from folded to IK solution
+                    hover_des = hover_prev.copy()
+                    theta_des = smooth_ramp(phase_dt, 0, ramp_dur,
+                                            _arm_only_theta_start, _arm_only_theta_end)
+
+                elif GRASP_METHOD == 'drone_only':
+                    # Arm locked at pre-aimed angles, drone flies to back-computed hover
+                    hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, _s2_hover)
+                    theta_des = S2_JOINTS.copy()
 
             elif current_phase == 4:
-                # GRASP: hold position, close gripper
-                hover_des = HOVER[4].copy()
+                # GRASP: hold end-of-approach position, close gripper
+                hover_des = hover_prev.copy()
                 gripper_close = True
                 # Hold arm angles from end of phase 3
 
@@ -400,8 +575,8 @@ def run_grasp():
                 hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[5])
                 gripper_close = True
                 box_pos = get_box_pos(model, data)
-                if phase_dt > 2.0 and phase_dt < 2.1:
-                    print(f'    Box z = {box_pos[2]:.3f} (started at 1.125)')
+                # if phase_dt > 2.0 and phase_dt < 2.1:
+                #     print(f'    Box z = {box_pos[2]:.3f} (started at 1.125)')
 
             elif current_phase == 6:
                 # TRANSPORT: smooth ramp to drop-off
@@ -431,8 +606,9 @@ def run_grasp():
                 hover_des, 0.0, dt)
             apply_platform_control(data, T, tau)
 
-            # Arm PD
-            apply_arm_pd(data, theta_des, st['theta'], st['theta_dot'])
+            # Arm PD + gravity feedforward
+            arm_bias = np.array([data.qfrc_bias[_j1_dof], data.qfrc_bias[_j2_dof]])
+            apply_arm_pd(data, theta_des, st['theta'], st['theta_dot'], bias=arm_bias)
 
             # Gripper
             apply_gripper(data, close=gripper_close)
@@ -456,6 +632,7 @@ def run_grasp():
             time.sleep(0.05)
 
     plot_trajectories(log)
+    plot_approach_phase(log)
 
 
 if __name__ == '__main__':

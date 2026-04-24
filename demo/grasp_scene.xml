@@ -84,7 +84,7 @@
         -->
         <body name="box" pos="0.40 0 1.125">
             <joint name="box_free" type="free"/>
-            <inertial pos="0 0 0" mass="0.05"
+            <inertial pos="0 0 0" mass="0.01"
                       diaginertia="0.000014 0.000014 0.000014"/>
             <geom name="box_geom" type="box" size="0.013 0.013 0.025"
                   material="box_mat"
@@ -181,8 +181,8 @@
     <!-- ctrl indices:
          0  joint1_torque    arm shoulder    [−5, 5] N·m
          1  joint2_torque    arm elbow       [−5, 5] N·m
-         2  gripper_left     slide +y→close  [−20, 0] N
-         3  gripper_right    slide −y→close  [ 0, 20] N
+         2  gripper_left     slide +y→close  [−30, 0] N
+         3  gripper_right    slide −y→close  [ 0, 30] N
          (base force/torque applied via xfrc_applied, not actuators)
     -->
     <actuator>
