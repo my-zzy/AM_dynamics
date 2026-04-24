@@ -67,8 +67,9 @@ _W_TERMINAL_DIAG = np.array([
 ])
 
 # Input bounds  [F_ext(3), tau_ext(3), tau_j(2)]
-_U_MIN = np.array([-30.0, -30.0, -30.0,  -2.0, -2.0, -2.0,  -5.0, -5.0])
-_U_MAX = np.array([ 30.0,  30.0,  30.0,   2.0,  2.0,  2.0,   5.0,  5.0])
+# Quadrotor thrust is body-z only: F_ext[0]=F_ext[1]=0, F_ext[2] >= 0
+_U_MIN = np.array([ 0.0,  0.0,  0.0,  -2.0, -2.0, -2.0,  -5.0, -5.0])
+_U_MAX = np.array([ 0.0,  0.0, 30.0,   2.0,  2.0,  2.0,   5.0,  5.0])
 
 # State bounds (only joint angles and velocities are tightly bounded)
 # Format: lower/upper for all 17 states
@@ -363,9 +364,10 @@ class MPCController:
             p_ref = self.traj._p(t_k)          # (3,)
 
             # Stage reference  [p_EE(3), v_A(3)=0, omega_A(3)=0, u(8)=hover]
+            # u starts at index 9: u[0]=F_ext_x, u[1]=F_ext_y, u[2]=F_ext_z
             yref_k          = np.zeros(self._ny)
             yref_k[0:3]     = p_ref
-            yref_k[9]       = 2.0              # F_ext_z: hover (small)
+            yref_k[11]      = 2.0              # F_ext_z: hover (index 9+2=11)
             self._solver.cost_set(k, 'yref', yref_k)
 
         # Terminal reference  [p_EE_final(3), v_A=0, omega_A=0]
