@@ -50,26 +50,26 @@ import casadi as ca
 # Stage cost weight matrix diagonal (ny = 17)
 # [p_EE(3), v_A(3), omega_A(3), u(8)]
 _W_STAGE_DIAG = np.array([
-    100.0, 100.0, 100.0,    # EE position tracking
-      5.0,   5.0,   5.0,    # platform linear velocity damping
-      5.0,   5.0,   5.0,    # platform angular velocity damping
-      0.1,   0.1,   0.1,    # F_ext effort
-      0.5,   0.5,   0.5,    # tau_ext effort
-      1.0,   1.0,            # joint torque effort
+    50.0, 50.0, 50.0,    # EE position tracking
+      2.0,   2.0,   2.0,    # platform linear velocity damping
+      1.0,   1.0,   1.0,    # platform angular velocity damping
+      1.0,   1.0,   1.0,    # F_ext effort
+      1.0,   1.0,   1.0,    # tau_ext effort
+     20.0,  20.0,         # joint torque effort (high: discourages arm motion)
 ])
 
 # Terminal cost weight diagonal (ny_e = 9)
 # [p_EE(3), v_A(3), omega_A(3)]
 _W_TERMINAL_DIAG = np.array([
-    1000.0, 1000.0, 1000.0,  # terminal EE position (heavy)
-      50.0,   50.0,   50.0,  # terminal velocity
-      50.0,   50.0,   50.0,  # terminal angular velocity
+    80.0, 80.0, 80.0,  # terminal EE position (heavy)
+      10.0,   10.0,   10.0,  # terminal velocity
+      10.0,   10.0,   10.0,  # terminal angular velocity
 ])
 
 # Input bounds  [F_ext(3), tau_ext(3), tau_j(2)]
 # Quadrotor thrust is body-z only: F_ext[0]=F_ext[1]=0, F_ext[2] >= 0
-_U_MIN = np.array([ 0.0,  0.0,  0.0,  -2.0, -2.0, -2.0,  -5.0, -5.0])
-_U_MAX = np.array([ 0.0,  0.0, 30.0,   2.0,  2.0,  2.0,   5.0,  5.0])
+_U_MIN = np.array([ 0.0,  0.0,  0.0,  -2.0, -2.0, -2.0,  -0.5, -0.5])
+_U_MAX = np.array([ 0.0,  0.0, 30.0,   2.0,  2.0,  2.0,   0.5,  0.5])
 
 # State bounds (only joint angles and velocities are tightly bounded)
 # Format: lower/upper for all 17 states
@@ -80,16 +80,16 @@ _X_MIN = np.array([
     -_INF, -_INF, -_INF,        # v_A
     -1.0, -1.0, -1.0, -1.0,    # q_A  (unit sphere, soft via dynamics)
     -_INF, -_INF, -_INF,        # omega_A
-    -np.pi/2, -np.pi/2,        # theta joint limits
-    -5.0, -5.0,                 # theta_dot velocity limits
+    -np.deg2rad(20), -np.deg2rad(20),  # theta joint limits (±20° — nearly fixed)
+    -1.0, -1.0,                         # theta_dot velocity limits (slow)
 ])
 _X_MAX = np.array([
     _INF, _INF, _INF,
     _INF, _INF, _INF,
     1.0, 1.0, 1.0, 1.0,
     _INF, _INF, _INF,
-    np.pi/2, np.pi/2,
-    5.0, 5.0,
+    np.deg2rad(20), np.deg2rad(20),
+    1.0, 1.0,
 ])
 
 
@@ -181,11 +181,9 @@ def _build_ocp(traj, model, N, dt,
     acados_model.cost_y_expr   = y_expr
     acados_model.cost_y_expr_e = y_e_expr
 
-    # Quaternion norm constraint (soft: included as a nonlinear path constraint
-    # with very tight bounds to avoid introducing hard infeasibility)
-    q_sym  = x_sym[6:10]
-    qn_expr = ca.dot(q_sym, q_sym) - 1.0    # = 0 at unit quaternion
-    acados_model.con_h_expr = qn_expr        # shape (1,)
+    # Quaternion norm constraint removed — ERK integration keeps |q|≈1
+    # sufficiently well for short horizons; the nonlinear path constraint
+    # was causing SQP line-search failures (ACADOS_MINSTEP).
 
     # Terminal constraints: p_EE = p_final, v_A = 0, theta_dot = 0
     if enable_terminal_constraint:
@@ -216,11 +214,6 @@ def _build_ocp(traj, model, N, dt,
     # ----------------------------------------------------------------
     # Constraints
     # ----------------------------------------------------------------
-
-    # Quaternion norm path constraint: |q|^2 - 1 in [-eps, eps]
-    qn_tol = 1e-3
-    ocp.constraints.lh = np.array([-qn_tol])
-    ocp.constraints.uh = np.array([ qn_tol])
 
     # Terminal constraints
     if enable_terminal_constraint:
@@ -258,10 +251,10 @@ def _build_ocp(traj, model, N, dt,
     ocp.solver_options.integrator_type           = 'ERK'
     ocp.solver_options.sim_method_num_stages     = 4      # RK4
     ocp.solver_options.sim_method_num_steps      = 1
-    ocp.solver_options.nlp_solver_type           = 'SQP_RTI'
+    ocp.solver_options.nlp_solver_type           = 'SQP'    # SQP_RTI
     ocp.solver_options.qp_solver                 = 'FULL_CONDENSING_HPIPM'
     ocp.solver_options.hessian_approx            = 'GAUSS_NEWTON'
-    ocp.solver_options.nlp_solver_max_iter       = 1      # RTI: 1 SQP iter
+    ocp.solver_options.nlp_solver_max_iter       = 50     # full SQP for diagnosis
     ocp.solver_options.qp_solver_cond_N          = N
     ocp.solver_options.print_level               = 0
 
@@ -357,7 +350,11 @@ class MPCController:
 
     def _update_references(self, t_current):
         """Push the sliding EE reference window into the solver."""
-        p_ee_ref_final = self.traj._p(self.traj.T_f)
+        # Terminal cost reference: end of the current horizon window, not T_f.
+        # This ensures the terminal cost pulls toward an achievable point
+        # instead of the 4s-away final target, which causes a cost spike.
+        t_horizon_end = t_current + self.N * self.dt
+        p_ee_ref_final = self.traj._p(t_horizon_end)
 
         for k in range(self.N):
             t_k   = t_current + k * self.dt
@@ -367,7 +364,7 @@ class MPCController:
             # u starts at index 9: u[0]=F_ext_x, u[1]=F_ext_y, u[2]=F_ext_z
             yref_k          = np.zeros(self._ny)
             yref_k[0:3]     = p_ref
-            yref_k[11]      = 2.0              # F_ext_z: hover (index 9+2=11)
+            yref_k[11]      = self.model.total_mass * 9.81  # F_ext_z: hover (index 9+2=11)
             self._solver.cost_set(k, 'yref', yref_k)
 
         # Terminal reference  [p_EE_final(3), v_A=0, omega_A=0]
@@ -460,11 +457,18 @@ class MPCController:
         # Solve
         status = self._solver.solve()
 
-        # Extract solution for warm-starting next iteration
-        for k in range(self.N + 1):
-            self._x_init[k] = self._solver.get(k, 'x')
-        for k in range(self.N):
-            self._u_init[k] = self._solver.get(k, 'u')
+        # Extract solution for warm-starting next iteration.
+        # Only update from a successful solve to avoid propagating NaN states.
+        if status in (0, 2):  # 0=success, 2=max_iter (acceptable for RTI)
+            for k in range(self.N + 1):
+                xk = self._solver.get(k, 'x')
+                # Renormalise quaternion to prevent drift-induced ill-conditioning.
+                q_norm = np.linalg.norm(xk[6:10])
+                if q_norm > 1e-8:
+                    xk[6:10] /= q_norm
+                self._x_init[k] = xk
+            for k in range(self.N):
+                self._u_init[k] = self._solver.get(k, 'u')
 
         u0 = self._solver.get(0, 'u')
 

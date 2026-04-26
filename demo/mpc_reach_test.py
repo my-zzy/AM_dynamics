@@ -96,8 +96,8 @@ def ee_world_pos(am_model, st):
 def apply_mpc_u(mj_model, mj_data, u0):
     base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'base')
     mj_data.xfrc_applied[base_id, :] = np.concatenate([u0[0:3], u0[3:6]])
-    mj_data.ctrl[CTRL_J1] = float(np.clip(u0[6], -5.0, 5.0))
-    mj_data.ctrl[CTRL_J2] = float(np.clip(u0[7], -5.0, 5.0))
+    mj_data.ctrl[CTRL_J1] = float(np.clip(u0[6], -0.5, 0.5))
+    mj_data.ctrl[CTRL_J2] = float(np.clip(u0[7], -0.5, 0.5))
 
 
 def clear_mpc_u(mj_model, mj_data):
