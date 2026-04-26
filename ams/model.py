@@ -68,22 +68,30 @@ class AerialManipulatorModel:
 
     # --- Manipulator links ---
     links: List[LinkParams] = field(default_factory=lambda: [
-        # Link 1 (upper arm / boom): 0.25 m
+        # Link 1: vertical capsule 0 0 0 → 0 0 -0.12 in link1 body frame (XML)
+        # DH x-axis points along link (-z in XML body). Rotation of XML inertia
+        # diag(0.0002, 0.0002, 0.00005) to DH frame gives diag(Izz, Ixx, Iyy):
+        #   Ixx_DH = Izz_XML = 0.00005  (axial, about link axis)
+        #   Iyy_DH = Ixx_XML = 0.0002   (transverse)
+        #   Izz_DH = Iyy_XML = 0.0002   (transverse)
         LinkParams(
             mass=0.15,
-            inertia=np.diag([0.0001, 0.0008, 0.0008]),
-            com_offset=np.array([0.125, 0.0, 0.0]),   # midpoint along link
+            inertia=np.diag([0.00005, 0.0002, 0.0002]),
+            com_offset=np.array([0.06, 0.0, 0.0]),   # midpoint along 0.12 m link
             alpha=0.0,
-            a=0.25,
+            a=0.12,
             d=0.0,
         ),
-        # Link 2 (forearm / stick): 0.20 m
+        # Link 2 + EE lumped: horizontal capsule (0.16m) + palm + fingers.
+        # Inertia computed by parallel axis theorem in inertia_check.py via MuJoCo
+        # (bodies: link2, ee, finger_left, finger_right) rotated into DH frame {2}.
+        # Run `python ams/inertia_check.py` to reproduce.
         LinkParams(
-            mass=0.12,
-            inertia=np.diag([0.0001, 0.0004, 0.0004]),
-            com_offset=np.array([0.10, 0.0, 0.0]),    # midpoint along link
+            mass=0.22,   # 0.12 (link) + 0.10 (EE palm + fingers)
+            inertia=np.diag([2.53800e-04, 8.21364e-04, 9.07564e-04]),
+            com_offset=np.array([0.12727, 0.0, 0.0]),  # combined link2 + EE COM
             alpha=0.0,
-            a=0.20,
+            a=0.16,
             d=0.0,
         ),
     ])
