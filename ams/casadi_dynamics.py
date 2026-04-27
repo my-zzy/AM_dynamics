@@ -130,8 +130,11 @@ def _ca_compute_link_transforms(model, theta):
     p_local.append(ca.DM.zeros(3, 1))
 
     # {i} → {i+1} for i = 1 … n-1  (uses link[i-1] geometry, joint angle theta[i])
+    # theta[1] has a -π/2 offset: DH convention sets θ=0 as collinear (straight),
+    # but the XML zero config is the L-shape (link2 horizontal), so θ₂_DH = θ₂_XML - π/2.
     for i in range(1, n):
-        R, p = _ca_dh_transform(model.links[i - 1], theta[i])
+        offset = np.pi / 2 if i == 1 else 0.0
+        R, p = _ca_dh_transform(model.links[i - 1], theta[i] - offset)
         R_local.append(R)
         p_local.append(p)
 

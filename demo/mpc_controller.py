@@ -332,14 +332,31 @@ class MPCController:
             generate=build_flag,
         )
 
+        # Gravity compensation torques at L-shape (θ₁=θ₂=0, XML zero config).
+        # At this config:
+        #   - link1 COM is directly below joint1 → zero moment arm → τ_j1 from link1 = 0
+        #   - link2+EE COM is at +com_x along world +x from joint2
+        #     → torque about z₀=[0,+1,0]_world = m₂·g·com_x about both joints
+        # Required motor torque (positive counteracts gravity for +θ₂ = dip down):
+        _m2  = model.links[1].mass
+        _cx2 = model.links[1].com_offset[0]   # 0.12727 m
+        _tau = _m2 * 9.81 * _cx2              # ≈ 0.274 Nm magnitude
+        # At L-shape (θ=0 XML), link2+EE COM is at x_com=0.127m forward of mount.
+        # This creates a gravity pitch torque on the platform of −m·g·x_com about world +y.
+        # Both the joint motors AND the platform rotors must compensate:
+        #   τ_j (both joints) = −0.274 Nm  (hold arm up)
+        #   τ_ext[1] (platform pitch) = −0.274 Nm  (counter arm moment on drone body)
+        self._tau_grav     = np.array([-_tau, -_tau])        # [τ_j1, τ_j2]
+        self._tau_ext_grav = np.array([0.0, -_tau, 0.0])     # platform pitch compensation
+
         # Warm-start arrays  (N+1 states, N inputs)
         self._x_init = np.zeros((N + 1, self.nx))
         self._u_init = np.zeros((N,     self.nu))
 
-        # Add gravity-compensating hover force as default u_init
-        g    = 9.81
-        mass = model.total_mass
-        self._u_init[:, 2] = mass * g   # F_ext_z to hover
+        # Gravity-compensating warm-start: hover force + pitch compensation + arm torques
+        self._u_init[:, 2]   = model.total_mass * 9.81  # F_ext_z
+        self._u_init[:, 3:6] = self._tau_ext_grav        # tau_ext: platform pitch hold
+        self._u_init[:, 6:8] = self._tau_grav            # tau_j1, tau_j2
 
         self._initialized = False
         self._enable_tc   = enable_terminal_constraint
@@ -361,10 +378,12 @@ class MPCController:
             p_ref = self.traj._p(t_k)          # (3,)
 
             # Stage reference  [p_EE(3), v_A(3)=0, omega_A(3)=0, u(8)=hover]
-            # u starts at index 9: u[0]=F_ext_x, u[1]=F_ext_y, u[2]=F_ext_z
+            # u layout in y: F_ext(3) at y[9:12], tau_ext(3) at y[12:15], tau_j(2) at y[15:17]
             yref_k          = np.zeros(self._ny)
             yref_k[0:3]     = p_ref
-            yref_k[11]      = self.model.total_mass * 9.81  # F_ext_z: hover (index 9+2=11)
+            yref_k[11]      = self.model.total_mass * 9.81  # F_ext_z hover
+            yref_k[13]      = self._tau_ext_grav[1]         # platform pitch hold (tau_ext_y)
+            yref_k[15:17]   = self._tau_grav                # gravity-compensating joint torques
             self._solver.cost_set(k, 'yref', yref_k)
 
         # Terminal reference  [p_EE_final(3), v_A=0, omega_A=0]

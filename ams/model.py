@@ -55,14 +55,18 @@ class AerialManipulatorModel:
     mount_offset: np.ndarray = field(
         default_factory=lambda: np.array([0.0, 0.0, -0.05])     # in platform frame
     )
-    # Arm base frame {0} rotation (platform → arm base)
-    # In platform coords: x_0 = [0,0,-1] (down), y_0 = [1,0,0] (fwd), z_0 = [0,-1,0] (right)
-    # z_0 is the joint rotation axis; +θ swings arm forward
+    # Arm base frame {0} rotation (platform → arm base)  [Option 4 — matches XML]
+    # Derived from XML: joint axis="0 1 0" (local y of link1 body = world +y at hover)
+    # and link1 geom fromto="0 0 0  0 0 -0.12" (link direction = world −z).
+    #   x₀ = [0, 0, -1]_A  (down   — link 1 direction at θ₁=0)
+    #   y₀ = z₀ × x₀       (backward — completes right-hand frame)
+    #   z₀ = [0, +1, 0]_A  (left   — DH joint axis = XML joint axis)
+    # Columns of mount_rotation are x₀, y₀, z₀ expressed in {A}.
     mount_rotation: np.ndarray = field(
         default_factory=lambda: np.array([
-            [0.0,  1.0,  0.0],
-            [0.0,  0.0, -1.0],
-            [-1.0, 0.0,  0.0],
+            [ 0.0, -1.0,  0.0],
+            [ 0.0,  0.0,  1.0],
+            [-1.0,  0.0,  0.0],
         ])
     )
 
@@ -135,10 +139,13 @@ class AerialManipulatorModel:
                                   [0.0, 0.0, 1.0]]))
         p_local.append(np.zeros(3))
 
-        # {i} → {i+1} for i = 1, ..., n-1
-        # Uses link[i-1] (NAME 'link i') geometry (α, a, d) with joint angle θ_{i}
+        # {1} → {2}: link 1 geometry with joint angle θ₂.
+        # θ₂ offset of −π/2: at XML joint2=0 the link2 body points forward (+x world),
+        # but DH x₂ must equal x₁ (down) when θ₂_DH=0.  Solving R_mount·[cos θ, sin θ, 0]=
+        # [1,0,0] gives θ₂_DH = −π/2.  So θ₂_DH = θ₂_XML − π/2.
         for i in range(1, n):
-            R, p = self.links[i - 1].dh_transform(theta[i])
+            angle = theta[i] - (np.pi / 2 if i == 1 else 0.0)
+            R, p = self.links[i - 1].dh_transform(angle)
             R_local.append(R)
             p_local.append(p)
 

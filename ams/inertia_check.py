@@ -71,7 +71,14 @@ def main():
     print('\n[Link 1]')
     m_xml, I_xml = get_body_props(mj_model, 'link1')
     compare('mass [kg]',       am.links[0].mass,              m_xml, TOL_MASS)
-    compare('inertia [kg·m²]', np.diag(am.links[0].inertia), I_xml, TOL_INERTIA)
+    # model.py inertia is in DH {1} frame; XML body_inertia is in link1 body frame.
+    # At θ=0: link1 body = world frame.  Rotate I_xml → DH {1} using R[1] from FK.
+    from ams.kinematics import forward_kinematics as _fk
+    _R1, _, _ = _fk(am, np.array([0.,0.,0.,1.]), np.zeros(3), np.zeros(2))
+    _I_link1_body = np.diag(I_xml)                        # in link1 body (= world at θ=0)
+    _I_link1_DH   = _R1[1].T @ _I_link1_body @ _R1[1]   # in DH {1} frame
+    compare('inertia in DH frame [kg·m²]', np.diag(am.links[0].inertia),
+            np.diag(_I_link1_DH), TOL_INERTIA)
 
     # ── Link 2 + EE combined inertia via parallel axis theorem ──────────────
     print('\n[Link 2 + EE combined  (parallel axis theorem)]')
@@ -187,6 +194,13 @@ def main():
     print(f'  Expected at θ=0: EE should be ~[0, 0, -(0.05+0.12+0.16)] = [0,0,-0.33] ...')
     print(f'  (exact depends on mount_rotation and DH frame alignment)')
 
+    # FK p[3] = EE body origin.  The 'end_effector' MuJoCo site is at pos="0.078 0 0"
+    # in the ee body frame (= along x of DH frame {3}).  Add site offset along R[3].
+    from ams.kinematics import forward_kinematics as _fk2
+    _R_fk, _, _ = _fk2(am, quat, pos, theta)
+    SITE_OFFSET  = np.array([0.078, 0.0, 0.0])   # in DH {3} / ee body frame
+    ee_fk_site   = p[3] + _R_fk[3] @ SITE_OFFSET
+
     # Check with MuJoCo at same configuration
     mj_data = mujoco.MjData(mj_model)
     mujoco.mj_resetData(mj_model, mj_data)
@@ -197,15 +211,13 @@ def main():
     site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
     ee_mj   = mj_data.site_xpos[site_id].copy()
     print(f'\n  MuJoCo end_effector site at same config: {np.round(ee_mj, 4)}')
-    fk_err = np.linalg.norm(p[3] - ee_mj)
+    print(f'  FK p[3] (EE body origin)               : {np.round(p[3], 4)}')
+    print(f'  FK p[3] + site offset [0.078,0,0]      : {np.round(ee_fk_site, 4)}')
+    fk_err = np.linalg.norm(ee_fk_site - ee_mj)
     print(f'  FK vs MuJoCo EE error: {fk_err*1000:.1f} mm  '
           f'{"  OK (<10mm)" if fk_err < 0.01 else "  *** LARGE ERROR ***"}')
 
     print('\n' + '=' * 70)
-    print('To fix remaining mismatches:')
-    print('  1. Update inertia tensors in ams/model.py to match XML diaginertia values.')
-    print('  2. Consider setting link2 a=0.238 to align FK p[3] with the EE site.')
-    print('=' * 70)
 
 
 if __name__ == '__main__':

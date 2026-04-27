@@ -29,7 +29,7 @@ from demo.mpc_controller import MPCController, _W_STAGE_DIAG, _W_TERMINAL_DIAG
 import casadi as ca
 
 # ── Config (match mpc_reach_test.py) ────────────────────────────────────────
-HOVER_START = np.array([0.25, 0.0, 1.45])
+HOVER_START = np.array([0.00, 0.0, 1.000])
 EE_TARGET   = np.array([0.40, 0.0, 1.125])
 N           = 20
 DT          = 0.05
