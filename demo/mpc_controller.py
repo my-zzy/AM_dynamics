@@ -48,8 +48,8 @@ import casadi as ca
 # Default weights and limits
 # ---------------------------------------------------------------------------
 
-# Stage cost weight matrix diagonal (ny = 25)
-# [p_EE(3), v_A(3), omega_A(3), u(8), Δu(8)]
+# Stage cost weight matrix diagonal (ny = 17)
+# [p_EE(3), v_A(3), omega_A(3), u(8)]
 _W_STAGE_DIAG = np.array([
     20.0, 20.0, 20.0,    # EE position tracking
       2.0,   2.0,   2.0,    # platform linear velocity damping
@@ -71,9 +71,9 @@ _W_RATE_DIAG = np.array([
 # Terminal cost weight diagonal (ny_e = 9)
 # [p_EE(3), v_A(3), omega_A(3)]
 _W_TERMINAL_DIAG = np.array([
-    40.0, 40.0, 40.0,  # terminal EE position (heavy)
-      8.0,   8.0,   8.0,  # terminal velocity
-      8.0,   8.0,   8.0,  # terminal angular velocity
+    80.0, 80.0, 80.0,  # terminal EE position (heavy)
+      10.0,   10.0,   10.0,  # terminal velocity
+      10.0,   10.0,   10.0,  # terminal angular velocity
 ])
 
 # Input bounds  [F_ext(3), tau_ext(3), tau_j(2)]
@@ -505,6 +505,12 @@ class MPCController:
             ``status`` (int), ``cost`` (float), ``solve_time`` (float s).
         """
         x0 = np.asarray(x_current, dtype=float).flatten()
+
+        # Renormalise quaternion in the initial state — ERK integration does
+        # not enforce unit norm, so small drift accumulates over time.
+        q_norm = np.linalg.norm(x0[6:10])
+        if q_norm > 1e-8:
+            x0[6:10] /= q_norm
 
         # Initialise warm-start on the first call
         if not self._initialized:
