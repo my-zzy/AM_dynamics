@@ -63,7 +63,7 @@ def get_am_state(mj_model, mj_data):
 # ---------------------------------------------------------------------------
 # Config — edit these to match your scene
 # ---------------------------------------------------------------------------
-HOVER_START  = np.array([0.25, 0.0, 1.45])   # drone base hover setpoint
+HOVER_START  = np.array([0.0, 0.0, 1.0])   # drone base hover setpoint
 EE_TARGET    = np.array([0.40, 0.0, 1.125])   # box / grasp target (world frame)
 
 EE_POS_TOL   = 0.015    # 15 mm — "arrived" threshold

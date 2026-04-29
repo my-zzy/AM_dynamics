@@ -21,8 +21,9 @@ OCP formulation
     Input  u ∈ ℝ⁸    [F_ext(3), τ_ext(3), τ_j(2)]
     Horizon N steps, step size dt  →  prediction window = N·dt seconds
 
-Stage cost (NONLINEAR_LS, residual y ∈ ℝ¹⁷):
-    y = [p_EE(x)(3), v_A(3), ω_A(3), u(8)]
+Stage cost (NONLINEAR_LS, residual y ∈ ℝ²⁵):
+    y = [p_EE(x)(3), v_A(3), ω_A(3), u(8), Δu(8)]
+    Δu = u_k − u_{k-1}   (control rate; u_{k-1} passed as a model parameter)
     ℓ = ½ (y - y_ref)ᵀ W (y - y_ref)
 
 Terminal cost (residual y_e ∈ ℝ⁹):
@@ -47,23 +48,32 @@ import casadi as ca
 # Default weights and limits
 # ---------------------------------------------------------------------------
 
-# Stage cost weight matrix diagonal (ny = 17)
-# [p_EE(3), v_A(3), omega_A(3), u(8)]
+# Stage cost weight matrix diagonal (ny = 25)
+# [p_EE(3), v_A(3), omega_A(3), u(8), Δu(8)]
 _W_STAGE_DIAG = np.array([
-    50.0, 50.0, 50.0,    # EE position tracking
+    20.0, 20.0, 20.0,    # EE position tracking
       2.0,   2.0,   2.0,    # platform linear velocity damping
-      1.0,   1.0,   1.0,    # platform angular velocity damping
-      1.0,   1.0,   1.0,    # F_ext effort
-      1.0,   1.0,   1.0,    # tau_ext effort
-     20.0,  20.0,         # joint torque effort (high: discourages arm motion)
+      2.0,   2.0,   2.0,    # platform angular velocity damping
+      0.2,   0.2,   0.2,    # F_ext effort
+      0.2,   0.2,   0.2,    # tau_ext effort
+      0.5,   0.5,         # joint torque effort (high: discourages arm motion)
+])
+
+# Control rate (delta-u) weight diagonal (n_delta_u = 8)
+# Penalises u_k - u_{k-1} to smooth the input trajectory
+# [F_ext(3), tau_ext(3), tau_j(2)]
+_W_RATE_DIAG = np.array([
+    3.0, 3.0, 3.0,   # F_ext rate
+    3.0, 3.0, 3.0,   # tau_ext rate
+    5.0, 5.0,        # joint torque rate (discourages jerky arm motion)
 ])
 
 # Terminal cost weight diagonal (ny_e = 9)
 # [p_EE(3), v_A(3), omega_A(3)]
 _W_TERMINAL_DIAG = np.array([
-    80.0, 80.0, 80.0,  # terminal EE position (heavy)
-      10.0,   10.0,   10.0,  # terminal velocity
-      10.0,   10.0,   10.0,  # terminal angular velocity
+    40.0, 40.0, 40.0,  # terminal EE position (heavy)
+      8.0,   8.0,   8.0,  # terminal velocity
+      8.0,   8.0,   8.0,  # terminal angular velocity
 ])
 
 # Input bounds  [F_ext(3), tau_ext(3), tau_j(2)]
@@ -98,7 +108,7 @@ _X_MAX = np.array([
 # ---------------------------------------------------------------------------
 
 def _build_ocp(traj, model, N, dt,
-               w_stage=None, w_terminal=None,
+               w_stage=None, w_terminal=None, w_rate=None,
                u_min=None, u_max=None,
                x_min=None, x_max=None,
                enable_terminal_constraint=True,
@@ -135,6 +145,7 @@ def _build_ocp(traj, model, N, dt,
 
     w_stage    = _W_STAGE_DIAG    if w_stage    is None else w_stage
     w_terminal = _W_TERMINAL_DIAG if w_terminal is None else w_terminal
+    w_rate     = _W_RATE_DIAG     if w_rate     is None else w_rate
     u_min      = _U_MIN           if u_min      is None else u_min
     u_max      = _U_MAX           if u_max      is None else u_max
     x_min      = _X_MIN           if x_min      is None else x_min
@@ -142,8 +153,8 @@ def _build_ocp(traj, model, N, dt,
 
     nx = 17
     nu = 8
-    ny   = 3 + 3 + 3 + nu   # 17  stage residual
-    ny_e = 3 + 3 + 3         # 9   terminal residual
+    ny   = 3 + 3 + 3 + nu + nu   # 25  stage residual (+ delta-u)
+    ny_e = 3 + 3 + 3              # 9   terminal residual
 
     # ----------------------------------------------------------------
     # Symbolic model
@@ -153,10 +164,14 @@ def _build_ocp(traj, model, N, dt,
 
     x_dot_expr = _ca_state_derivative_expr(model, x_sym, u_sym)
 
+    # Model parameter: previous control input (for control-rate cost Δu = u - u_prev)
+    u_prev_sym = ca.MX.sym('u_prev', nu)
+
     acados_model = AcadosModel()
     acados_model.name         = 'am_mpc'
     acados_model.x            = x_sym
     acados_model.u            = u_sym
+    acados_model.p            = u_prev_sym
     acados_model.xdot         = ca.MX.sym('xdot', nx)
     acados_model.f_expl_expr  = x_dot_expr     # explicit ODE
 
@@ -173,8 +188,10 @@ def _build_ocp(traj, model, N, dt,
     v_A_sym    = x_sym[3:6]
     omega_A_sym= x_sym[10:13]
 
-    # Stage residual y = [p_ee, v_A, omega_A, u]
-    y_expr   = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym, u_sym)
+    # Stage residual y = [p_ee, v_A, omega_A, u, Δu]
+    # Δu = u - u_prev  where u_prev is passed as a model parameter per node
+    delta_u_expr = u_sym - u_prev_sym
+    y_expr   = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym, u_sym, delta_u_expr)
     # Terminal residual y_e = [p_ee, v_A, omega_A]
     y_e_expr = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym)
 
@@ -204,12 +221,15 @@ def _build_ocp(traj, model, N, dt,
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
 
-    ocp.cost.W   = np.diag(w_stage)
+    ocp.cost.W   = np.diag(np.concatenate([w_stage, w_rate]))
     ocp.cost.W_e = np.diag(w_terminal)
 
     # Initial references (updated at solve time)
     ocp.cost.yref   = np.zeros(ny)
     ocp.cost.yref_e = np.zeros(ny_e)
+
+    # Initial parameter values (u_prev = 0; updated at solve time)
+    ocp.parameter_values = np.zeros(nu)
 
     # ----------------------------------------------------------------
     # Constraints
@@ -361,6 +381,10 @@ class MPCController:
         self._initialized = False
         self._enable_tc   = enable_terminal_constraint
 
+        # Last applied control — used as u_prev at node 0 for the rate cost.
+        # Initialised to the hover warm-start so the first solve starts smooth.
+        self._u_prev = self._u_init[0].copy()
+
     # ------------------------------------------------------------------
     # Reference update helpers
     # ------------------------------------------------------------------
@@ -373,14 +397,24 @@ class MPCController:
         t_horizon_end = t_current + self.N * self.dt
         p_ee_ref_final = self.traj._p(t_horizon_end)
 
+        # Set per-node u_prev parameter for the control rate cost term.
+        # Node 0 uses the last actually-applied control; later nodes use the
+        # warm-started previous control from the shifted solution array.
+        self._solver.set(0, 'p', self._u_prev)
+        for k in range(1, self.N):
+            self._solver.set(k, 'p', self._u_init[k - 1])
+
         for k in range(self.N):
             t_k   = t_current + k * self.dt
             p_ref = self.traj._p(t_k)          # (3,)
 
-            # Stage reference  [p_EE(3), v_A(3)=0, omega_A(3)=0, u(8)=hover]
+            # Stage reference  [p_EE(3), v_A(3), omega_A(3)=0, u(8)=hover]
+            # v_A feedforward ≈ v_EE (valid for near-hover, small arm angles).
             # u layout in y: F_ext(3) at y[9:12], tau_ext(3) at y[12:15], tau_j(2) at y[15:17]
+            v_ref           = self.traj._v(t_k)             # (3,) EE velocity feedforward
             yref_k          = np.zeros(self._ny)
             yref_k[0:3]     = p_ref
+            yref_k[3:6]     = v_ref                         # platform velocity feedforward
             yref_k[11]      = self.model.total_mass * 9.81  # F_ext_z hover
             yref_k[13]      = self._tau_ext_grav[1]         # platform pitch hold (tau_ext_y)
             yref_k[15:17]   = self._tau_grav                # gravity-compensating joint torques
@@ -409,14 +443,32 @@ class MPCController:
     # ------------------------------------------------------------------
 
     def _init_warm_start(self, x0, t_current):
-        """Fill x_init by rolling out hover dynamics, u_init stays at hover."""
-        from ams.simulator import rk4_step
-        x = x0.copy()
-        self._x_init[0] = x
-        u_hover = self._u_init[0].copy()
-        for k in range(self.N):
-            x = rk4_step(self.model, x, u_hover, self.dt)
-            self._x_init[k + 1] = x
+        """Fill x_init by interpolating platform position along the EE trajectory.
+
+        Rather than rolling out with hover inputs (which leaves the drone
+        stationary), we shift the platform position proportionally to the EE
+        trajectory motion.  This gives the SQP a physically plausible initial
+        guess even when the trajectory requires large translations.
+        """
+        p_A_start = x0[0:3].copy()
+
+        # EE displacement over the prediction horizon
+        p_ee_now = self.traj._p(t_current)
+        t_end    = t_current + self.N * self.dt
+        p_ee_end = self.traj._p(t_end)
+        delta_ee = p_ee_end - p_ee_now   # how much EE needs to move
+
+        # Platform moves by the same vector (arm angles stay at zero)
+        p_A_end  = p_A_start + delta_ee
+        v_A_mean = delta_ee / (self.N * self.dt)   # constant velocity hint
+
+        self._x_init[0] = x0.copy()
+        for k in range(1, self.N + 1):
+            alpha = k / self.N
+            xi       = x0.copy()
+            xi[0:3]  = (1.0 - alpha) * p_A_start + alpha * p_A_end
+            xi[3:6]  = v_A_mean          # smooth constant velocity
+            self._x_init[k] = xi
 
         for k in range(self.N + 1):
             self._solver.set(k, 'x', self._x_init[k])
@@ -491,6 +543,10 @@ class MPCController:
 
         u0 = self._solver.get(0, 'u')
 
+        # Update u_prev so the next solve's rate cost references the
+        # input we are about to apply.
+        self._u_prev = u0.copy()
+
         cost       = self._solver.get_cost()
         solve_time = self._solver.get_stats('time_tot')
 
@@ -507,6 +563,7 @@ class MPCController:
     def reset(self):
         """Reset warm-start flag (e.g. after a large state jump)."""
         self._initialized = False
+        self._u_prev = self._u_init[0].copy()
 
     def ee_position(self, x):
         """Compute EE world position from state vector using CasADi function."""
