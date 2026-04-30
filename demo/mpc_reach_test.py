@@ -64,7 +64,7 @@ def get_am_state(mj_model, mj_data):
 # Config — edit these to match your scene
 # ---------------------------------------------------------------------------
 HOVER_START  = np.array([0.0, 0.0, 1.0])   # drone base hover setpoint
-EE_TARGET    = np.array([0.40, 0.0, 1.125])   # box / grasp target (world frame)
+EE_TARGET    = np.array([1.0, 0.0, 2.0])   # box / grasp target (world frame)
 
 EE_POS_TOL   = 0.015    # 15 mm — "arrived" threshold
 EE_VEL_TOL   = 0.05     # 5 cm/s
@@ -158,7 +158,7 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
     # Phase 1: MPC reach
     # Phase 2: MPC hold at target
     # ----------------------------------------------------------------
-    STAB_DUR = 3.0
+    STAB_DUR = 5.0
 
     # Determine EE start after stabilisation (use FK from nominal state)
     st_nominal = get_am_state(mj_model, mj_data)
@@ -313,9 +313,18 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
         # Final stats
         st_f   = get_am_state(mj_model, mj_data)
         p_ee_f = ee_world_pos(am_model, st_f)
+        # EE speed: backward finite difference over last two logged samples
+        if len(log['ee_x']) >= 2 and len(log['t']) >= 2:
+            dt_last = log['t'][-1] - log['t'][-2]
+            vx_f = (log['ee_x'][-1] - log['ee_x'][-2]) / dt_last if dt_last > 0 else 0.0
+            vz_f = (log['ee_z'][-1] - log['ee_z'][-2]) / dt_last if dt_last > 0 else 0.0
+            spd_f = np.sqrt(vx_f**2 + vz_f**2)
+        else:
+            vx_f = vz_f = spd_f = 0.0
         print(f'\n=== Done ===')
         print(f'Final EE position : {p_ee_f}')
         print(f'Final EE error    : {np.linalg.norm(p_ee_f - EE_TARGET)*1000:.1f} mm')
+        print(f'Final EE speed    : {spd_f*1000:.2f} mm/s  (vx={vx_f*1000:.2f}, vz={vz_f*1000:.2f} mm/s)')
         if log['solve_ms']:
             sms = np.array(log['solve_ms'])
             print(f'MPC solve time    : mean={sms.mean():.2f} ms  max={sms.max():.2f} ms')
@@ -345,12 +354,12 @@ def plot_results(log, ee_target, traj):
     t   = np.array(log['t'])
     ph  = np.array(log['phase'])
 
-    fig = plt.figure(figsize=(14, 9))
+    fig = plt.figure(figsize=(14, 12))
     fig.suptitle(
         f'MPC Reach Test   target={np.round(ee_target,3)}\n'
         f'traj={traj.T_f:.1f} s   N={traj.N}   dt={traj.dt*1000:.0f} ms',
         fontsize=11)
-    gs = gridspec.GridSpec(3, 2, hspace=0.50, wspace=0.35)
+    gs = gridspec.GridSpec(4, 2, hspace=0.55, wspace=0.35)
 
     # ── xz spatial trajectory ───────────────────────────────────────────────
     ax = fig.add_subplot(gs[:, 0])
@@ -403,9 +412,28 @@ def plot_results(log, ee_target, traj):
     ax = fig.add_subplot(gs[2, 1])
     ax.plot(t, log['th1'], color='tab:blue',   lw=1.3, label='j1 actual')
     ax.plot(t, log['th2'], color='tab:orange', lw=1.3, label='j2 actual')
-    ax.set_xlabel('time [s]')
     ax.set_ylabel('deg')
     ax.set_title('Joint angles')
+    ax.legend(fontsize=8)
+    ax.grid(True, lw=0.4)
+    _shade_phases(ax, t, ph)
+
+    # ── EE velocity ─────────────────────────────────────────────────────────
+    # Computed via finite difference of logged EE positions.
+    ee_x = np.array(log['ee_x'])
+    ee_z = np.array(log['ee_z'])
+    # np.gradient uses central differences — smooth for closely-spaced samples.
+    vx = np.gradient(ee_x, t)
+    vz = np.gradient(ee_z, t)
+    v_norm = np.sqrt(vx**2 + vz**2)
+    ax = fig.add_subplot(gs[3, 1])
+    ax.plot(t, vx,     color='tab:blue',   lw=1.2, label='v_EE x')
+    ax.plot(t, vz,     color='tab:orange', lw=1.2, label='v_EE z')
+    ax.plot(t, v_norm, color='k',          lw=1.5, label='‖v_EE‖')
+    ax.axhline(0.0, color='gray', lw=0.7, ls='--')
+    ax.set_xlabel('time [s]')
+    ax.set_ylabel('m/s')
+    ax.set_title('EE velocity  (→ 0 at hold)')
     ax.legend(fontsize=8)
     ax.grid(True, lw=0.4)
     _shade_phases(ax, t, ph)

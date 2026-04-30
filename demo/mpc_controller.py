@@ -437,14 +437,18 @@ class MPCController:
         yref_e[0:3] = p_ee_ref_final
         self._solver.cost_set(self.N, 'yref', yref_e)
 
-        # Update hard terminal constraint bounds if enabled
+        # Update hard terminal constraint bounds if enabled.
+        # Use the horizon-end trajectory point (always feasible by construction)
+        # rather than the fixed final target, which is unreachable when the
+        # horizon doesn't yet reach T_f.  Once the horizon end overshoots T_f
+        # the trajectory clamps to the final position anyway.
         if self._enable_tc:
-            p_ee_final = self.traj._p(self.traj.T_f)
+            p_ee_tc = p_ee_ref_final   # traj._p(t_horizon_end), already computed above
             tol_e = 1e-2
-            lh_e = np.concatenate([p_ee_final - tol_e,
+            lh_e = np.concatenate([p_ee_tc - tol_e,
                                     -tol_e * np.ones(3),
                                     -tol_e * np.ones(2)])
-            uh_e = np.concatenate([p_ee_final + tol_e,
+            uh_e = np.concatenate([p_ee_tc + tol_e,
                                     tol_e * np.ones(3),
                                     tol_e * np.ones(2)])
             self._solver.constraints_set(self.N, 'lh', lh_e)

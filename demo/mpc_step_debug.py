@@ -46,7 +46,7 @@ from demo.mpc_controller import MPCController, _W_STAGE_DIAG, _W_RATE_DIAG, _W_J
 # Config
 # ---------------------------------------------------------------------------
 HOVER_START = np.array([0.0, 0.0, 1.0])
-EE_TARGET   = np.array([0.40, 0.0, 1.125])
+EE_TARGET   = np.array([1.0, 0.0, 2.0])
 
 CTRL_J1, CTRL_J2 = 0, 1
 
@@ -145,8 +145,13 @@ def plot_step(step_idx, t_mpc, mpc, traj, am_model,
         r_omg   = xs[k, 10:13]
         r_theta = xs[k, 13:15]          # joint angle residual (ref = 0)
         r_u     = us[k].copy(); r_u[2] -= hover_f
-        u_prev  = us[k - 1] if k > 0 else us[0]
-        r_du    = us[k] - u_prev
+        # k=0: Δu uses the actual u_prev passed into the OCP (stored in mpc._u_prev)
+        # k>0: Δu uses consecutive predicted inputs
+        if k == 0:
+            u_prev_k = mpc._u_prev
+        else:
+            u_prev_k = us[k - 1]
+        r_du    = us[k] - u_prev_k
         stage_ee_cost[k]    = 0.5 * r_ee    @ (W[0:3]  * r_ee)
         stage_vel_cost[k]   = 0.5 * r_vel   @ (W[3:6]  * r_vel)
         stage_omg_cost[k]   = 0.5 * r_omg   @ (W[6:9]  * r_omg)
