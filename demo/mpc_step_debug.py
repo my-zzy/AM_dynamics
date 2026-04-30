@@ -40,7 +40,7 @@ from test_model import load_model
 from ams.model import AerialManipulatorModel
 from ams.kinematics import forward_kinematics
 from demo.mpc_trajectory import EETrajectory
-from demo.mpc_controller import MPCController, _W_STAGE_DIAG, _W_RATE_DIAG, _U_MIN, _U_MAX
+from demo.mpc_controller import MPCController, _W_STAGE_DIAG, _W_RATE_DIAG, _W_JOINT_ANGLE_DIAG, _U_MIN, _U_MAX
 
 # ---------------------------------------------------------------------------
 # Config
@@ -82,7 +82,11 @@ def ee_world_pos(am_model, st):
 
 def apply_mpc_u(mj_model, mj_data, u0):
     base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'base')
-    mj_data.xfrc_applied[base_id, :] = np.concatenate([u0[0:3], u0[3:6]])
+    # u0[0:3] and u0[3:6] are body-frame; rotate to world frame for xfrc_applied.
+    R = mj_data.xmat[base_id].reshape(3, 3)
+    F_world   = R @ u0[0:3]
+    tau_world = R @ u0[3:6]
+    mj_data.xfrc_applied[base_id, :] = np.concatenate([F_world, tau_world])
     mj_data.ctrl[CTRL_J1] = float(np.clip(u0[6], -0.5, 0.5))
     mj_data.ctrl[CTRL_J2] = float(np.clip(u0[7], -0.5, 0.5))
 
@@ -125,28 +129,32 @@ def plot_step(step_idx, t_mpc, mpc, traj, am_model,
     ref_ee = np.array([traj._p(t) for t in t_ax])   # (N+1, 3)
 
     # ── Per-stage cost breakdown ─────────────────────────────────────────────
-    W  = _W_STAGE_DIAG   # (17,)  [p_EE(3), v_A(3), omega(3), u(8)]
-    Wr = _W_RATE_DIAG    # (8,)   [delta_u]
+    W  = _W_STAGE_DIAG        # (17,)  [p_EE(3), v_A(3), omega(3), u(8)]
+    Wr = _W_RATE_DIAG         # (8,)
+    Wj = _W_JOINT_ANGLE_DIAG  # (2,)
     hover_f = am_model.total_mass * 9.81
-    stage_ee_cost   = np.zeros(N)
-    stage_vel_cost  = np.zeros(N)
-    stage_omg_cost  = np.zeros(N)
-    stage_u_cost    = np.zeros(N)
-    stage_rate_cost = np.zeros(N)
+    stage_ee_cost    = np.zeros(N)
+    stage_vel_cost   = np.zeros(N)
+    stage_omg_cost   = np.zeros(N)
+    stage_theta_cost = np.zeros(N)
+    stage_u_cost     = np.zeros(N)
+    stage_rate_cost  = np.zeros(N)
     for k in range(N):
-        r_ee  = pred_ee[k] - ref_ee[k]
-        r_vel = xs[k, 3:6]
-        r_omg = xs[k, 10:13]
-        r_u   = us[k].copy(); r_u[2] -= hover_f
-        u_prev = us[k - 1] if k > 0 else us[0]   # Δu relative to previous
-        r_du  = us[k] - u_prev
-        stage_ee_cost[k]   = 0.5 * r_ee  @ (W[0:3]  * r_ee)
-        stage_vel_cost[k]  = 0.5 * r_vel @ (W[3:6]  * r_vel)
-        stage_omg_cost[k]  = 0.5 * r_omg @ (W[6:9]  * r_omg)
-        stage_u_cost[k]    = 0.5 * (r_u[0:3] @ (W[9:12]  * r_u[0:3])
-                                     + r_u[3:6] @ (W[12:15] * r_u[3:6])
-                                     + r_u[6:8] @ (W[15:17] * r_u[6:8]))
-        stage_rate_cost[k] = 0.5 * r_du @ (Wr * r_du)
+        r_ee    = pred_ee[k] - ref_ee[k]
+        r_vel   = xs[k, 3:6]
+        r_omg   = xs[k, 10:13]
+        r_theta = xs[k, 13:15]          # joint angle residual (ref = 0)
+        r_u     = us[k].copy(); r_u[2] -= hover_f
+        u_prev  = us[k - 1] if k > 0 else us[0]
+        r_du    = us[k] - u_prev
+        stage_ee_cost[k]    = 0.5 * r_ee    @ (W[0:3]  * r_ee)
+        stage_vel_cost[k]   = 0.5 * r_vel   @ (W[3:6]  * r_vel)
+        stage_omg_cost[k]   = 0.5 * r_omg   @ (W[6:9]  * r_omg)
+        stage_theta_cost[k] = 0.5 * r_theta @ (Wj      * r_theta)
+        stage_u_cost[k]     = 0.5 * (r_u[0:3] @ (W[9:12]  * r_u[0:3])
+                                      + r_u[3:6] @ (W[12:15] * r_u[3:6])
+                                      + r_u[6:8] @ (W[15:17] * r_u[6:8]))
+        stage_rate_cost[k]  = 0.5 * r_du @ (Wr * r_du)
 
     # ── Quaternion norms ─────────────────────────────────────────────────────
     qnorms = np.array([np.linalg.norm(xs[k, 6:10]) for k in range(N + 1)])
@@ -198,14 +206,16 @@ def plot_step(step_idx, t_mpc, mpc, traj, am_model,
     # 4. Per-stage cost stacked bar (spans 2 columns)
     ax = fig.add_subplot(gs[1, 0:2])
     kk = np.arange(N)
-    ax.bar(kk, stage_ee_cost,   label='EE pos',   color='tab:blue')
-    ax.bar(kk, stage_vel_cost,  bottom=stage_ee_cost, label='vel', color='tab:orange')
+    ax.bar(kk, stage_ee_cost,    label='EE pos',     color='tab:blue')
+    ax.bar(kk, stage_vel_cost,   bottom=stage_ee_cost, label='vel',   color='tab:orange')
     bot2 = stage_ee_cost + stage_vel_cost
-    ax.bar(kk, stage_omg_cost,  bottom=bot2,       label='omega',  color='tab:green')
+    ax.bar(kk, stage_omg_cost,   bottom=bot2,         label='omega',  color='tab:green')
     bot3 = bot2 + stage_omg_cost
-    ax.bar(kk, stage_u_cost,    bottom=bot3,       label='effort', color='tab:red')
-    bot4 = bot3 + stage_u_cost
-    ax.bar(kk, stage_rate_cost, bottom=bot4,       label='rate',   color='tab:purple')
+    ax.bar(kk, stage_theta_cost, bottom=bot3,         label='theta',  color='tab:cyan')
+    bot4 = bot3 + stage_theta_cost
+    ax.bar(kk, stage_u_cost,     bottom=bot4,         label='effort', color='tab:red')
+    bot5 = bot4 + stage_u_cost
+    ax.bar(kk, stage_rate_cost,  bottom=bot5,         label='rate',   color='tab:purple')
     ax.set_title('Per-stage cost breakdown')
     ax.set_xlabel('stage k'); ax.set_ylabel('cost')
     ax.legend(fontsize=7); ax.grid(True, lw=0.3, axis='y')
@@ -236,8 +246,9 @@ def plot_step(step_idx, t_mpc, mpc, traj, am_model,
     ax = fig.add_subplot(gs[2, 1])
     ax.plot(t_ax, xs[:, 0], label='x')
     ax.plot(t_ax, xs[:, 1], label='y')
-    ax.plot(t_ax, xs[:, 2], label='z')
-    ax.set_title('Predicted drone pos'); ax.set_xlabel('t [s]'); ax.set_ylabel('m')
+    ax.plot(t_ax, xs[:, 2] - 1.0, color='tab:green', lw=1.5, label='z − hover')
+    ax.axhline(0, color='tab:green', lw=0.7, ls='--')
+    ax.set_title('Predicted drone pos'); ax.set_xlabel('t [s]'); ax.set_ylabel('x,y [m]  /  Δz [m]')
     ax.legend(fontsize=7); ax.grid(True, lw=0.3)
 
     # 8. Quaternion norm along horizon

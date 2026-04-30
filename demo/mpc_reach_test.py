@@ -95,7 +95,11 @@ def ee_world_pos(am_model, st):
 
 def apply_mpc_u(mj_model, mj_data, u0):
     base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'base')
-    mj_data.xfrc_applied[base_id, :] = np.concatenate([u0[0:3], u0[3:6]])
+    # u0[0:3] and u0[3:6] are body-frame; rotate to world frame for xfrc_applied.
+    R = mj_data.xmat[base_id].reshape(3, 3)
+    F_world   = R @ u0[0:3]
+    tau_world = R @ u0[3:6]
+    mj_data.xfrc_applied[base_id, :] = np.concatenate([F_world, tau_world])
     mj_data.ctrl[CTRL_J1] = float(np.clip(u0[6], -0.5, 0.5))
     mj_data.ctrl[CTRL_J2] = float(np.clip(u0[7], -0.5, 0.5))
 

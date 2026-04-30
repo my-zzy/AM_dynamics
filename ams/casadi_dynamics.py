@@ -22,8 +22,8 @@ State layout (matches ams/state.py)
 
 Control input
 -------------
-    u[0:3]   F_ext        external force on platform (world)
-    u[3:6]   tau_ext      external torque on platform (body)
+    u[0:3]   F_ext        external force on platform (body frame; Fx=Fy=0 → pure thrust along body-z)
+    u[3:6]   tau_ext      external torque on platform (body frame; roll/pitch/yaw)
     u[6:8]   joint_torques
 """
 
@@ -430,15 +430,21 @@ def _ca_state_derivative_expr(model, x, u):
     theta     = x[13:15]
     theta_dot = x[15:17]
 
-    # Unpack input
-    F_ext   = u[0:3]
-    tau_ext = u[3:6]
-    jt      = u[6:8]
+    # Unpack input (body-frame: thrust along body-z, torques as roll/pitch/yaw)
+    F_body   = u[0:3]
+    tau_body = u[3:6]
+    jt       = u[6:8]
+
+    # Rotate to world frame so that tilting the drone creates horizontal force.
+    # This is the standard quadrotor coupling: F_world = R_body @ F_body.
+    R_A = ca_quat_to_rotmat(q_A)
+    F_world   = ca.mtimes(R_A, F_body)
+    tau_world = ca.mtimes(R_A, tau_body)
 
     a_A, alpha_A, theta_ddot = ca_forward_dynamics(
         model, q_A, p_A, omega_A, v_A,
         theta, theta_dot,
-        F_ext, tau_ext, jt)
+        F_world, tau_world, jt)
 
     q_dot = ca_quat_deriv(q_A, omega_A)
 

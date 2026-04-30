@@ -18,11 +18,13 @@ Quick start
 OCP formulation
 ---------------
     State  x ∈ ℝ¹⁷   [p_A(3), v_A(3), q_A(4), ω_A(3), θ(2), θ̇(2)]
-    Input  u ∈ ℝ⁸    [F_ext(3), τ_ext(3), τ_j(2)]
+    Input  u ∈ ℝ⁸    [F_body(3), τ_body(3), τ_j(2)]
+                     F_body = [0, 0, T] (thrust along body-z); rotated to world in OCP dynamics.
+                     τ_body = roll/pitch/yaw body torques; rotated to world in OCP dynamics.
     Horizon N steps, step size dt  →  prediction window = N·dt seconds
 
-Stage cost (NONLINEAR_LS, residual y ∈ ℝ²⁵):
-    y = [p_EE(x)(3), v_A(3), ω_A(3), u(8), Δu(8)]
+Stage cost (NONLINEAR_LS, residual y ∈ ℝ²⁷):
+    y = [p_EE(x)(3), v_A(3), ω_A(3), θ(2), u(8), Δu(8)]
     Δu = u_k − u_{k-1}   (control rate; u_{k-1} passed as a model parameter)
     ℓ = ½ (y - y_ref)ᵀ W (y - y_ref)
 
@@ -54,9 +56,9 @@ _W_STAGE_DIAG = np.array([
     20.0, 20.0, 20.0,    # EE position tracking
       2.0,   2.0,   2.0,    # platform linear velocity damping
       2.0,   2.0,   2.0,    # platform angular velocity damping
-      0.2,   0.2,   0.2,    # F_ext effort
-      0.2,   0.2,   0.2,    # tau_ext effort
-      0.5,   0.5,         # joint torque effort (high: discourages arm motion)
+      0.02,   0.02,   0.02,    # F_ext effort
+      0.02,   0.02,   0.02,    # tau_ext effort
+      0.05,   0.05,         # joint torque effort (high: discourages arm motion)
 ])
 
 # Control rate (delta-u) weight diagonal (n_delta_u = 8)
@@ -67,6 +69,11 @@ _W_RATE_DIAG = np.array([
     3.0, 3.0, 3.0,   # tau_ext rate
     5.0, 5.0,        # joint torque rate (discourages jerky arm motion)
 ])
+
+# Joint angle (theta) cost diagonal — penalises arm deflection from zero.
+# High weight forces the optimizer to fly the drone rather than bend the arm.
+# [theta1, theta2]
+_W_JOINT_ANGLE_DIAG = np.array([5.0, 5.0])
 
 # Terminal cost weight diagonal (ny_e = 9)
 # [p_EE(3), v_A(3), omega_A(3)]
@@ -108,7 +115,7 @@ _X_MAX = np.array([
 # ---------------------------------------------------------------------------
 
 def _build_ocp(traj, model, N, dt,
-               w_stage=None, w_terminal=None, w_rate=None,
+               w_stage=None, w_terminal=None, w_rate=None, w_joint_angle=None,
                u_min=None, u_max=None,
                x_min=None, x_max=None,
                enable_terminal_constraint=True,
@@ -143,18 +150,20 @@ def _build_ocp(traj, model, N, dt,
         ca_forward_kinematics,
     )
 
-    w_stage    = _W_STAGE_DIAG    if w_stage    is None else w_stage
-    w_terminal = _W_TERMINAL_DIAG if w_terminal is None else w_terminal
-    w_rate     = _W_RATE_DIAG     if w_rate     is None else w_rate
-    u_min      = _U_MIN           if u_min      is None else u_min
-    u_max      = _U_MAX           if u_max      is None else u_max
-    x_min      = _X_MIN           if x_min      is None else x_min
-    x_max      = _X_MAX           if x_max      is None else x_max
+    w_stage       = _W_STAGE_DIAG        if w_stage       is None else w_stage
+    w_terminal    = _W_TERMINAL_DIAG     if w_terminal    is None else w_terminal
+    w_rate        = _W_RATE_DIAG         if w_rate        is None else w_rate
+    w_joint_angle = _W_JOINT_ANGLE_DIAG  if w_joint_angle is None else w_joint_angle
+    u_min         = _U_MIN               if u_min         is None else u_min
+    u_max         = _U_MAX               if u_max         is None else u_max
+    x_min         = _X_MIN               if x_min         is None else x_min
+    x_max         = _X_MAX               if x_max         is None else x_max
 
     nx = 17
     nu = 8
-    ny   = 3 + 3 + 3 + nu + nu   # 25  stage residual (+ delta-u)
-    ny_e = 3 + 3 + 3              # 9   terminal residual
+    # y = [p_EE(3), v_A(3), omega_A(3), theta(2), u(8), delta_u(8)] = 27
+    ny   = 3 + 3 + 3 + 2 + nu + nu   # 27  stage residual
+    ny_e = 3 + 3 + 3                  # 9   terminal residual
 
     # ----------------------------------------------------------------
     # Symbolic model
@@ -188,10 +197,11 @@ def _build_ocp(traj, model, N, dt,
     v_A_sym    = x_sym[3:6]
     omega_A_sym= x_sym[10:13]
 
-    # Stage residual y = [p_ee, v_A, omega_A, u, Δu]
+    # Stage residual y = [p_ee, v_A, omega_A, theta, u, Δu]
+    # theta ref = 0 (arm folded): penalises arm deflection, forces drone to fly
     # Δu = u - u_prev  where u_prev is passed as a model parameter per node
     delta_u_expr = u_sym - u_prev_sym
-    y_expr   = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym, u_sym, delta_u_expr)
+    y_expr   = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym, theta_sym, u_sym, delta_u_expr)
     # Terminal residual y_e = [p_ee, v_A, omega_A]
     y_e_expr = ca.vertcat(p_ee_expr, v_A_sym, omega_A_sym)
 
@@ -221,7 +231,8 @@ def _build_ocp(traj, model, N, dt,
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
 
-    ocp.cost.W   = np.diag(np.concatenate([w_stage, w_rate]))
+    # W layout: [w_stage[0:9]=EE+vel+omega, w_joint_angle=theta, w_stage[9:17]=u, w_rate=delta_u]
+    ocp.cost.W   = np.diag(np.concatenate([w_stage[:9], w_joint_angle, w_stage[9:], w_rate]))
     ocp.cost.W_e = np.diag(w_terminal)
 
     # Initial references (updated at solve time)
@@ -408,16 +419,17 @@ class MPCController:
             t_k   = t_current + k * self.dt
             p_ref = self.traj._p(t_k)          # (3,)
 
-            # Stage reference  [p_EE(3), v_A(3), omega_A(3)=0, u(8)=hover]
+            # Stage reference  [p_EE(3), v_A(3), omega_A(3)=0, theta(2)=0, u(8)=hover, delta_u(8)=0]
+            # y layout: p_EE[0:3], v_A[3:6], omega[6:9], theta[9:11], u[11:19], du[19:27]
             # v_A feedforward ≈ v_EE (valid for near-hover, small arm angles).
-            # u layout in y: F_ext(3) at y[9:12], tau_ext(3) at y[12:15], tau_j(2) at y[15:17]
             v_ref           = self.traj._v(t_k)             # (3,) EE velocity feedforward
             yref_k          = np.zeros(self._ny)
             yref_k[0:3]     = p_ref
             yref_k[3:6]     = v_ref                         # platform velocity feedforward
-            yref_k[11]      = self.model.total_mass * 9.81  # F_ext_z hover
-            yref_k[13]      = self._tau_ext_grav[1]         # platform pitch hold (tau_ext_y)
-            yref_k[15:17]   = self._tau_grav                # gravity-compensating joint torques
+            # theta ref = 0 (arm folded) — already zero
+            yref_k[13]      = self.model.total_mass * 9.81  # u[2]=F_ext_z hover  (11+2=13)
+            yref_k[15]      = self._tau_ext_grav[1]         # u[4]=tau_ext_y      (11+4=15)
+            yref_k[17:19]   = self._tau_grav                # u[6:8]=tau_j        (11+6:8=17:19)
             self._solver.cost_set(k, 'yref', yref_k)
 
         # Terminal reference  [p_EE_final(3), v_A=0, omega_A=0]
