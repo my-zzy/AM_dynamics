@@ -282,7 +282,7 @@ def _build_ocp(traj, model, N, dt,
     ocp.solver_options.integrator_type           = 'ERK'
     ocp.solver_options.sim_method_num_stages     = 4      # RK4
     ocp.solver_options.sim_method_num_steps      = 1
-    ocp.solver_options.nlp_solver_type           = 'SQP'    # SQP_RTI
+    ocp.solver_options.nlp_solver_type           = 'SQP_RTI'    # SQP_RTI
     ocp.solver_options.qp_solver                 = 'FULL_CONDENSING_HPIPM'
     ocp.solver_options.hessian_approx            = 'GAUSS_NEWTON'
     ocp.solver_options.nlp_solver_max_iter       = 50     # full SQP for diagnosis

@@ -51,14 +51,19 @@ from demo.grasp_task import (
     get_grasp_state, get_box_pos, apply_gripper,
     load_grasp_scene,
     GROUND_Z, BOX_TARGET, HOVER, CTRL_J1, CTRL_J2,
+    GAINS,
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
+# Safe takeoff target: straight up, no lateral movement
+HOVER_SAFE    = np.array([0.0,  0.0, 1.5])
+
 # Platform hover position before MPC reach phase
 HOVER_PRE_MPC = np.array([0.25, 0.0, 1.45])
+HOVER_PRE_MPC = HOVER_SAFE
 
 # MPC trajectory parameters
 MPC_TRAJ_TF   = 4.0    # trajectory duration (seconds)
@@ -95,23 +100,19 @@ def ee_pos_from_state(am_model, st):
 
 
 def apply_mpc_control(model, data, u0):
-    """Inject MPC output u0 = [F_ext(3), tau_ext(3), tau_j(2)] into MuJoCo.
+    """Inject MPC output u0 = [F_body(3), tau_body(3), tau_j(2)] into MuJoCo.
 
-    Platform forces/torques are applied as body external wrench on the 'base'
-    body in world frame. Joint torques are written to ctrl[0:2].
+    u0[0:3] and u0[3:6] are body-frame (thrust along body-z, body torques);
+    rotated to world frame before writing to xfrc_applied.
     """
     base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'base')
-
-    F_ext   = u0[0:3]
-    tau_ext = u0[3:6]
-    tau_j   = u0[6:8]
-
-    # xfrc_applied layout: [fx, fy, fz, tx, ty, tz] in world frame
-    data.xfrc_applied[base_id, :] = np.concatenate([F_ext, tau_ext])
-
-    # Joint torques
-    data.ctrl[CTRL_J1] = float(np.clip(tau_j[0], -5.0, 5.0))
-    data.ctrl[CTRL_J2] = float(np.clip(tau_j[1], -5.0, 5.0))
+    R = data.xmat[base_id].reshape(3, 3)
+    F_world   = R @ u0[0:3]
+    tau_world = R @ u0[3:6]
+    data.xfrc_applied[base_id, :] = np.concatenate([F_world, tau_world])
+    # Joint torques — clip to OCP input bounds ±0.5 Nm
+    data.ctrl[CTRL_J1] = float(np.clip(u0[6], -0.5, 0.5))
+    data.ctrl[CTRL_J2] = float(np.clip(u0[7], -0.5, 0.5))
 
 
 def clear_mpc_forces(model, data):
@@ -124,15 +125,135 @@ def clear_mpc_forces(model, data):
 # PD arm hold (used outside MPC phases)
 # ---------------------------------------------------------------------------
 
-KP_ARM = 1.0
-KD_ARM = 0.3
+KP_ARM = 8.0
+KD_ARM = 0.8
 
 
-def apply_arm_pd(data, theta_des, theta_cur, theta_dot):
+def apply_arm_pd(data, theta_des, theta_cur, theta_dot, bias=None):
     tau = KP_ARM * (theta_des - theta_cur) - KD_ARM * theta_dot
+    if bias is not None:
+        tau += bias
     tau = np.clip(tau, -5.0, 5.0)
     data.ctrl[CTRL_J1] = tau[0]
     data.ctrl[CTRL_J2] = tau[1]
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_trajectories(log):
+    """Plot drone, EE, and joint angle trajectories (mirrors grasp_task.py)."""
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    if not log['t']:
+        print('No trajectory data to plot.')
+        return
+
+    t      = np.array(log['t'])
+    phases = np.array(log['phase'])
+    drone  = np.array(log['drone_pos'])
+    ee     = np.array(log['ee_pos'])
+    box    = np.array(log['box_pos'])
+    theta  = np.degrees(np.array(log['theta']))
+    tdes   = np.degrees(np.array(log['theta_des']))
+
+    PHASE_NAMES = {
+        0: 'TAKEOFF', 1: 'HOVER', 2: 'MPC_REACH',
+        3: 'GRASP', 4: 'LIFT', 5: 'TRANSPORT', 6: 'PLACE', 7: 'RETRACT',
+    }
+    PHASE_COLORS = {
+        0: '#e8f4f8', 1: '#f0f8e8', 2: '#ffe8cc',
+        3: '#ffe0e0', 4: '#f8e8ff', 5: '#e8e8ff', 6: '#fff8e0', 7: '#e8ffe8',
+    }
+
+    def add_phase_spans(ax):
+        prev_ph = phases[0]
+        t_start = t[0]
+        for i in range(1, len(t)):
+            if phases[i] != prev_ph:
+                ax.axvspan(t_start, t[i], alpha=0.25,
+                           color=PHASE_COLORS.get(prev_ph, '#f0f0f0'))
+                prev_ph = phases[i]
+                t_start = t[i]
+        ax.axvspan(t_start, t[-1], alpha=0.25,
+                   color=PHASE_COLORS.get(prev_ph, '#f0f0f0'))
+        # Add phase-change vlines and labels
+        for i in range(1, len(t)):
+            if phases[i] != phases[i - 1]:
+                ax.axvline(t[i], color='gray', lw=0.8, ls=':')
+
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle('MPC Grasp Task Trajectories', fontsize=13)
+    gs = gridspec.GridSpec(5, 2, figure=fig)
+
+    # ── 2-D xz trajectory (left column, spans all rows) ─────────────────────
+    ax2d = fig.add_subplot(gs[:, 0])
+    ax2d.plot(drone[:, 0], drone[:, 2],
+              color='tab:blue', linewidth=1.5, label='Drone base')
+    ax2d.scatter(drone[0, 0],  drone[0, 2],  color='tab:blue',   s=60, marker='o', zorder=5)
+    ax2d.scatter(drone[-1, 0], drone[-1, 2], color='tab:blue',   s=60, marker='x', zorder=5)
+    ax2d.plot(ee[:, 0], ee[:, 2],
+              color='tab:orange', linewidth=1.5, label='Gripper EE')
+    ax2d.scatter(ee[0, 0],  ee[0, 2],  color='tab:orange', s=60, marker='o', zorder=5)
+    ax2d.scatter(ee[-1, 0], ee[-1, 2], color='tab:orange', s=60, marker='x', zorder=5)
+    ax2d.scatter(box[0, 0], box[0, 2], color='tab:green',  s=120, marker='*',
+                 zorder=6, label='Box (initial)')
+    ax2d.scatter(BOX_TARGET[0], BOX_TARGET[2], color='limegreen', s=240, marker='*',
+                 zorder=7, label='Grasp target')
+    ax2d.set_xlabel('x [m]')
+    ax2d.set_ylabel('z [m]')
+    ax2d.legend(fontsize=8)
+    ax2d.set_title('xz Trajectory  (o=start  x=end)')
+    ax2d.grid(True, linewidth=0.4)
+    ax2d.set_aspect('equal')
+
+    # ── Position time series (right column, rows 0-2) ───────────────────────
+    pos_labels = ['x [m]', 'y [m]', 'z [m]']
+    for i in range(3):
+        ax = fig.add_subplot(gs[i, 1])
+        add_phase_spans(ax)
+        ax.plot(t, drone[:, i], color='tab:blue',   linewidth=1.2, label='Drone base')
+        ax.plot(t, ee[:, i],    color='tab:orange', linewidth=1.2, label='Gripper EE')
+        ax.plot(t, box[:, i],   color='tab:green',  linewidth=1.2, linestyle='--', label='Box')
+        ax.set_ylabel(pos_labels[i])
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, linewidth=0.4)
+
+    # ── Joint angle time series (right column, rows 3-4) ────────────────────
+    joint_labels = ['joint1 [deg]', 'joint2 [deg]']
+    for i in range(2):
+        ax = fig.add_subplot(gs[3 + i, 1])
+        add_phase_spans(ax)
+        ax.plot(t, theta[:, i], color='tab:purple', linewidth=1.2, label='actual')
+        ax.plot(t, tdes[:, i],  color='tab:red',    linewidth=1.2, linestyle='--', label='desired')
+        ax.set_ylabel(joint_labels[i])
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, linewidth=0.4)
+        if i == 1:
+            ax.set_xlabel('time [s]')
+
+    # Phase legend (text annotations on the xz plot)
+    unique_phases = sorted(set(phases))
+    for ph in unique_phases:
+        mask = phases == ph
+        if np.any(mask):
+            t_mid = t[mask].mean()
+            for ax in fig.axes[1:]:
+                ymin, ymax = ax.get_ylim()
+                ax.text(t_mid, ymax, PHASE_NAMES.get(ph, str(ph)),
+                        fontsize=6, ha='center', va='top', color='gray',
+                        clip_on=True)
+
+    plt.tight_layout()
+    out_path = os.path.join(os.path.dirname(__file__), 'mpc_grasp_trajectory.png')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    print(f'Trajectory plot saved \u2192 {out_path}')
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +276,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     print(f'Robot mass: {total_mass:.3f} kg')
 
     # PID for platform (used during non-MPC phases)
-    pid = DroneController(mass=total_mass)
+    pid = DroneController(mass=total_mass, **GAINS)
 
     sim_dt = mj_model.opt.timestep   # 0.002 s
     mpc_step_counter = 0
@@ -203,6 +324,11 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     mpc_t0         = 0.0     # simulation time when MPC phase started
     last_u0        = None    # cached MPC output between solves
     _retract_start = np.zeros(2)
+
+    # Trajectory logging (all phases)
+    ee_site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
+    log = {'t': [], 'phase': [], 'drone_pos': [], 'ee_pos': [],
+           'box_pos': [], 'theta': [], 'theta_des': [], 'hover_des': []}
 
     # Logging for phase 2
     ee_errors   = []
@@ -255,6 +381,12 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         elif new_phase == 3:
             gripper_close = False    # will be set True after 0.3 s
 
+        elif new_phase == 4:
+            # Freeze arm at its current pose — do NOT recompute IK.
+            # Rerunning IK from a slightly drifted drone position would give a
+            # discontinuous theta_des jump, causing the visible arm teleport.
+            theta_des = st['theta'].copy()
+
         elif new_phase == 7:
             _retract_start = st['theta'].copy()
 
@@ -305,6 +437,16 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             t  = mj_data.time - t0_sim
             st = get_grasp_state(mj_model, mj_data)
 
+            # Trajectory logging
+            log['t'].append(t)
+            log['phase'].append(phase)
+            log['drone_pos'].append(st['pos'].copy())
+            log['ee_pos'].append(mj_data.site_xpos[ee_site_id].copy())
+            log['box_pos'].append(get_box_pos(mj_model, mj_data))
+            log['theta'].append(st['theta'].copy())
+            log['theta_des'].append(theta_des.copy())
+            log['hover_des'].append(hover_des.copy())
+
             # Phase transitions
             advance_phase(t, st)
 
@@ -317,7 +459,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 ramp_dur = 4.0
                 hover_des = smooth_ramp(elapsed, 0, ramp_dur,
                                         np.array([0.0, 0.0, GROUND_Z]),
-                                        HOVER_PRE_MPC)
+                                        HOVER_SAFE)
                 theta_des     = np.zeros(2)
                 gripper_close = False
                 clear_mpc_forces(mj_model, mj_data)
@@ -384,30 +526,19 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
-            # Phase 3: GRASP — hold last MPC u0, close gripper after 0.3 s
+            # Phase 3: GRASP — PID holds platform at current position; close gripper
+            # MPC is dropped here: once the box is grasped the EE mass changes
+            # and the OCP model is no longer valid.
             # ----------------------------------------------------------------
             elif phase == 3:
                 gripper_close = elapsed > 0.3
+                clear_mpc_forces(mj_model, mj_data)
 
-                # Keep NMPC hold (frozen terminal reference = grasp point)
-                if last_u0 is not None and mpc_ctrl is not None:
-                    if mpc_step_counter % mpc_steps_per_solve == 0:
-                        x_now = pack_state(st)
-                        t_mpc = mpc_ctrl.traj.T_f   # clamp at terminal
-                        try:
-                            u0_new, _ = mpc_ctrl.solve(x_now, t_mpc)
-                            last_u0 = u0_new
-                        except Exception:
-                            pass
-                    mpc_step_counter += 1
-                    apply_mpc_control(mj_model, mj_data, last_u0)
-                else:
-                    clear_mpc_forces(mj_model, mj_data)
-                    T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
-                                         HOVER_PRE_MPC, 0.0, sim_dt)
-                    apply_platform_control(mj_data, T, tau)
-                    apply_arm_pd(mj_data, np.zeros(2), st['theta'], st['theta_dot'])
-
+                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                                     HOVER_PRE_MPC, 0.0, sim_dt)
+                apply_platform_control(mj_data, T, tau)
+                # Hold arm at its current IK angles via PD
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
                 apply_gripper(mj_data, close=gripper_close)
 
             # ----------------------------------------------------------------
@@ -424,10 +555,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
 
-                # Hold arm IK angles for box
-                ik = arm_ik(st['pos'], BOX_TARGET)
-                if ik is not None:
-                    theta_des = np.array(ik)
+                # Hold arm at its frozen pose (set in enter_phase)
                 apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
                 apply_gripper(mj_data, close=True)
 
@@ -517,6 +645,8 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             sim_loop(viewer)
     else:
         sim_loop(None)
+
+    plot_trajectories(log)
 
 
 # ---------------------------------------------------------------------------

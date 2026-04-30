@@ -16,9 +16,10 @@ simulator and physics validator throughout.
 - [Repository layout](#repository-layout)
 - [Environment setup](#environment-setup)
 - [Useful scripts and usage](#useful-scripts-and-usage)
-  - [Validation](#validation)
-  - [Basic experiments](#basic-experiments)
   - [MPC demo](#mpc-demo)
+  - [PID demo](#pid-demo)
+  - [Basic experiments](#basic-experiments)
+  - [Validation](#validation)
 - [Model reference](#model-reference)
   - [XML geometry](#xml-geometry)
   - [Zero configuration](#zero-configuration)
@@ -76,36 +77,19 @@ All commands are run from the **workspace root** (`AM_dynamics/`).
 
 ### MPC demo
 
-> Requires `conda activate gz` and acados installed with `ACADOS_SOURCE_DIR` set.
+> Requires conda environments and acados installed with `ACADOS_SOURCE_DIR` set.
 
-#### `demo/mpc_single_step_debug.py`  ← **start here**
-Runs **one** MPC solver call from the nominal hover state and produces a 9-panel
-diagnostic plot (`demo/mpc_single_step_debug.png`): predicted EE trajectory,
-per-stage cost breakdown, joint angles, drone position, quaternion norm.
-
-```bash
-python demo/mpc_single_step_debug.py           # reuse existing compiled code
-python demo/mpc_single_step_debug.py --rebuild # force recompile acados C code
-```
-
-Solver status 0 = OK.  Use this script to verify any model/weight change before
-running a full test.
-
----
 
 #### `demo/mpc_reach_test.py`
 Full MPC reach test: drone hovers at `HOVER_START`, MPC drives the EE along a
 minimum-jerk trajectory to `EE_TARGET`, then holds at the target.
 
 ```bash
-python demo/mpc_reach_test.py
 python demo/mpc_reach_test.py --rebuild          # recompile acados
-python demo/mpc_reach_test.py --no-viewer        # headless
 python demo/mpc_reach_test.py --no-tc            # disable hard terminal constraint
-python demo/mpc_reach_test.py --dt-mpc=0.05 --horizon=20 --traj-dur=4.0
 ```
 
----
+![](figs/mpc_whole_body/mpc_reach_test.png)
 
 #### `demo/mpc_grasp_task.py`
 Full pick-and-place using the NMPC controller. PID handles take-off; NMPC
@@ -115,66 +99,10 @@ takes over for EE reaching, hold at grasp point, and arm retraction.
 python demo/mpc_grasp_task.py
 ```
 
----
+![](figs/mpc_whole_body/mpc_grasp_trajectory.png)
 
-### Basic experiments
 
-#### `basic/arm_test.py`
-Joint tracking test with the drone base **fixed** in space. Drives both joints
-through step, sine, or ramp references via a PD controller and plots
-position/velocity tracking.
-
-```bash
-python basic/arm_test.py          # default: sine mode
-```
-
-Edit `TEST_MODE = 'step' | 'sine' | 'ramp'` at the top of the file.
-
----
-
-#### `basic/arm_effect.py`
-Free-float demo: constant hover thrust applied as `xfrc_applied`, arm swings
-sinusoidally. Shows how arm motion causes base drift.  Opens the MuJoCo viewer
-and saves `basic/arm_effect.png` on exit.
-
-```bash
-python basic/arm_effect.py
-```
-
----
-
-#### `basic/pid_demo.py`
-Real-time MuJoCo viewer demo. PID position controller flies the AM through a
-waypoint sequence (take-off → forward → sideways → climb → return → land).
-
-```bash
-python basic/pid_demo.py
-```
-
----
-
-#### `basic/pid_tuning.py`
-Interactive PID tuning loop for the full AM model. Runs a trajectory (p2p or
-figure-8), opens the viewer, saves position/attitude plots when the viewer
-closes. Edit `GAINS` at the top of the file to tune.
-
-```bash
-python basic/pid_tuning.py --mode p2p
-python basic/pid_tuning.py --mode figure8
-```
-
----
-
-#### `basic/pid_tuning_quad.py`
-Same as above but loads `quad_only.xml` — useful for tuning the drone gains
-in isolation before adding the arm.
-
-```bash
-python basic/pid_tuning_quad.py --mode p2p
-python basic/pid_tuning_quad.py --mode figure8
-```
-
----
+### PID demo
 
 #### `demo/grasp_task.py`
 Full pick-and-place demo using a **decoupled** PID (platform) + PD (arm)
@@ -185,7 +113,49 @@ transport → place → retract.
 python demo/grasp_task.py
 ```
 
+**Move arm only:**
+
+![](figs/arm_only_grasp/grasp_trajectory.png)
+
+**Move platform only:**
+
+![](figs/drone_only_grasp/grasp_trajectory.png)
+
 ---
+
+### Basic experiments
+
+#### `basic/arm_test.py`
+Joint tracking test with the drone base **fixed** in space. Drives both joints
+through step, sine, or ramp references via a PD controller and plots
+position/velocity tracking.
+
+Edit TEST_MODE = 'step' | 'sine' | 'ramp' at the top of the file.
+
+#### `basic/arm_effect.py`
+Free-float demo: constant hover thrust applied as `xfrc_applied`, arm swings
+sinusoidally. Shows how arm motion causes base drift.  Opens the MuJoCo viewer
+and saves `basic/arm_effect.png` on exit.
+
+#### `basic/pid_demo.py`
+Real-time MuJoCo viewer demo. PID position controller flies the AM through a
+waypoint sequence (take-off → forward → sideways → climb → return → land).
+
+#### `basic/pid_tuning.py`
+Interactive PID tuning loop for the full AM model. Runs a trajectory (p2p or
+figure-8), opens the viewer, saves position/attitude plots when the viewer
+closes. Edit `GAINS` at the top of the file to tune.
+
+```bash
+python basic/pid_tuning.py --mode p2p/figure8
+```
+
+#### `basic/pid_tuning_quad.py`
+Same as above but loads `quad_only.xml` — useful for tuning the drone gains
+in isolation before adding the arm.
+
+---
+
 
 ### Validation
 
@@ -193,21 +163,11 @@ python demo/grasp_task.py
 Compares mass, inertia, and EE forward kinematics between `ams/model.py` and
 the MuJoCo XML.  Run this whenever model parameters change.
 
-```bash
-python ams/inertia_check.py
-```
-
 Expected output: all checks print `OK`; FK EE position error < 1 mm.
-
----
 
 #### `basic/test_model.py`
 Loads `am_robot.xml`, prints joint names/indices, body tree, and geom extents.
 Useful for verifying the MuJoCo model structure.
-
-```bash
-python basic/test_model.py
-```
 
 ---
 
