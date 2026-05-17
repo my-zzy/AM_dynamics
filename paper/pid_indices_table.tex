@@ -1,0 +1,39 @@
+\begin{table}[htbp]
+  \centering
+  \caption{PID控制器性能指标(PID Controller Performance Indices) —— 悬停点对点实验(Hover P2P Experiment)}
+  \label{tab:pid_indices}
+  \begin{tabular}{llrc}
+    \hline
+    \textbf{类别(Category)} & \textbf{指标(Index)} & \textbf{数值(Value)} & \textbf{单位(Unit)} \\
+    \hline
+    \multirow{3}{*}{积分（斜坡+保持）(Integral)}
+      & IAE   & 0.2034 & m$\cdot$s       \\
+      & ISE   & 0.0065 & m$^2\cdot$s     \\
+      & ITAE  & 0.7430 & m$\cdot$s$^2$   \\
+    \hline
+    \multirow{4}{*}{阶跃响应(Step-response)}
+      & 上升时间（90\%）(Rise time)      & 3.870  & s   \\
+      & 调节时间（5\%）(Settling time)   & 4.118  & s   \\
+      & 超调量(Overshoot)                & 3.73   & \%  \\
+      & 稳态误差(Steady-state error)     & 0.0039 & m   \\
+    \hline
+    \multirow{3}{*}{保持阶段跟踪(Hold-phase tracking)}
+      & 均方根误差(RMSE) & 0.0154 & m \\
+      & 平均绝对误差(MAE) & 0.0102 & m \\
+      & 最大误差(Max error) & 0.0473 & m \\
+    \hline
+    \multirow{3}{*}{姿态均方根误差（保持）(Attitude RMSE)}
+      & 横滚(Roll)  & 0.000 & deg \\
+      & 俯仰(Pitch) & 0.020 & deg \\
+      & 偏航(Yaw)   & 0.000 & deg \\
+    \hline
+    \multirow{2}{*}{控制量（斜坡+保持）(Control effort)}
+      & 平均推力(Mean thrust)      & 18.347 & N \\
+      & 推力变化量(Thrust variation) & 2.177  & N \\
+    \hline
+  \end{tabular}
+  \begin{tablenotes}
+    \small
+    \item 步距(Step distance): 1.2689\,m; \quad 调节带（5\%）(Settling band): 0.0634\,m.
+  \end{tablenotes}
+\end{table}

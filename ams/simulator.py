@@ -105,13 +105,16 @@ if __name__ == '__main__':
     m = AerialManipulatorModel()
     total_mass = m.total_mass
 
-    # --- Hover hold: constant thrust = total weight ---
+    # --- Hover hold: gravity-compensating wrench for default arm config ---
     s0 = SystemState()
     s0.platform.position[:] = [0, 0, 1.0]
     x0 = s0.to_vector()
 
-    hover_F = np.array([0, 0, total_mass * 9.81])
-    u_hover = np.concatenate([hover_F, np.zeros(3 + N_JOINTS)])
+    F0, tau0, jt0 = inverse_dynamics(
+        m, s0.platform.quaternion, s0.platform.position,
+        np.zeros(3), np.zeros(3), s0.manipulator.joint_angles,
+        np.zeros(N_JOINTS), np.zeros(3), np.zeros(3), np.zeros(N_JOINTS))
+    u_hover = np.concatenate([F0, tau0, jt0])
 
     t, x = simulate(m, x0, lambda _t: u_hover, (0, 1.0), 0.01)
     assert np.allclose(x[-1, :3], [0, 0, 1.0], atol=1e-5), f'pos={x[-1,:3]}'
