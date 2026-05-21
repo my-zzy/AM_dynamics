@@ -1,0 +1,171 @@
+(gz) zhiyang@zhiyang-ROG-Zephyrus-M16-GU603ZM-GU603ZM:~/AM_dynamics$ python demo/mpc_reach_test.py 
+=== MPC Reach Test ===
+Robot mass : 1.870 kg  (mg = 18.34 N)
+EE start (FK) : [0.16 0.   0.83]
+EE target     : [1. 0. 2.]
+
+Building MPCController (may compile acados C code)...
+field AcadosOcpDims.N has been migrated to AcadosOcpOptions.N_horizon. setting AcadosOcpOptions.N_horizon = N. For future comppatibility, please use AcadosOcpOptions.N_horizon directly.
+Code reuse possible, skipping code generation.
+acados was compiled without OpenMP.
+MPCController ready in 0.2 s
+
+[t=5.00s] Phase 1: MPC REACH  (traj_dur=4.0s, timeout=10.0s)
+  t=5.00s  ee_err=1436.9 mm  solve=84.56 ms  status=0
+  t=6.00s  ee_err=1242.0 mm  solve=71.95 ms  status=0
+  t=7.00s  ee_err=642.7 mm  solve=58.15 ms  status=0
+  t=8.00s  ee_err=128.5 mm  solve=69.82 ms  status=0
+  t=9.00s  ee_err=22.8 mm  solve=45.33 ms  status=0
+  t=10.00s  ee_err=28.3 mm  solve=46.94 ms  status=0
+  t=11.00s  ee_err=5.9 mm  solve=48.07 ms  status=0
+[t=11.15s] Phase 2: MPC HOLD  (ARRIVED  ee_err=4.4 mm)
+  t=12.00s  ee_err=4.9 mm  solve=45.39 ms  status=0
+  t=13.00s  ee_err=4.3 mm  solve=46.18 ms  status=0
+  t=14.00s  ee_err=0.8 mm  solve=35.90 ms  status=0
+  t=15.00s  ee_err=0.9 mm  solve=34.21 ms  status=0
+  t=16.00s  ee_err=0.5 mm  solve=35.49 ms  status=0
+[t=16.15s] Hold complete. Stopping.
+
+=== Done ===
+Final EE position : [1.00007052 0.         1.99966594]
+Final EE error    : 0.3 mm
+Final EE speed    : 0.85 mm/s  (vx=0.06, vz=0.84 mm/s)
+MPC solve time    : mean=49.95 ms  max=84.56 ms
+/home/zhiyang/AM_dynamics/demo/mpc_reach_test.py:387: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  IAE  = float(np.trapz(e_r,        t_r))
+/home/zhiyang/AM_dynamics/demo/mpc_reach_test.py:388: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  ISE  = float(np.trapz(e_r ** 2,   t_r))
+/home/zhiyang/AM_dynamics/demo/mpc_reach_test.py:389: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  ITAE = float(np.trapz(tr_r * e_r, t_r))
+
+=== EE Reach Performance Indices ===
+  Reach time           : 5.75 s
+  IAE  (reach) [m·s]   : 2.7931
+  ISE  (reach) [m²·s]  : 3.024879
+  ITAE (reach) [m·s²]  : 3.2915
+  Final EE error [mm]  : 4.5
+  RMSE hold    [mm]    : 3.1
+  Path length  [m]     : 1.475
+  Path efficiency      : 0.972  (1 = straight line)
+  Solve time mean [ms] : 49.95
+  Solve time max  [ms] : 84.56
+Close viewer to exit.
+Plot saved → /home/zhiyang/AM_dynamics/demo/mpc_reach_test.png
+Approach zoom plot saved → /home/zhiyang/AM_dynamics/demo/mpc_reach_zoom.png
+
+
+===========================
+===========================
+
+(gz) zhiyang@zhiyang-ROG-Zephyrus-M16-GU603ZM-GU603ZM:~/AM_dynamics$ python basic/pid_tuning_hover.py 
+Model mass : 1.870 kg
+Gains      : {'kp_z': 10.0, 'ki_z': 2.0, 'kd_z': 6.0, 'kp_xy': 5.5, 'kd_xy': 1.0, 'kp_rp': 10.0, 'ki_rp': 4.5, 'kd_rp': 2.5, 'kp_yaw': 5.0, 'ki_yaw': 0.2, 'kd_yaw': 1.5}
+
+=== Hover P2P  (EE → TARGET) ===
+  EE start              : [0.16 0.   0.83]
+  EE target  (TARGET)   : [1. 0. 2.]
+  Drone base target     : [0.84 0.   2.17]
+  EE step distance      : 1.4403 m
+  EE offset             : [ 0.16  0.   -0.17]
+  Arm joints            : joint1=0.000  joint2=0.000 rad
+  Phase 1 – START HOVER : 3.0 s
+  Phase 2 – RAMP        : 5.0 s
+  Phase 3 – HOLD        : 5.0 s
+  t=  0.00s  [START_HOVER ]  EE=[0.160,0.000,0.830]  EE_err=1440.3 mm
+  t=  0.25s  [START_HOVER ]  EE=[0.160,0.000,0.828]  EE_err=1442.2 mm
+  t=  0.50s  [START_HOVER ]  EE=[0.170,0.000,0.828]  EE_err=1436.2 mm
+  t=  0.75s  [START_HOVER ]  EE=[0.187,0.000,0.830]  EE_err=1425.2 mm
+  t=  1.00s  [START_HOVER ]  EE=[0.204,0.000,0.831]  EE_err=1414.0 mm
+  t=  1.25s  [START_HOVER ]  EE=[0.216,0.000,0.832]  EE_err=1406.6 mm
+  t=  1.50s  [START_HOVER ]  EE=[0.219,0.000,0.832]  EE_err=1405.0 mm
+  t=  1.75s  [START_HOVER ]  EE=[0.212,0.000,0.832]  EE_err=1409.0 mm
+  t=  2.00s  [START_HOVER ]  EE=[0.200,0.000,0.831]  EE_err=1416.9 mm
+  t=  2.25s  [START_HOVER ]  EE=[0.185,0.000,0.830]  EE_err=1426.2 mm
+  t=  2.50s  [START_HOVER ]  EE=[0.172,0.000,0.829]  EE_err=1434.2 mm
+  t=  2.76s  [START_HOVER ]  EE=[0.164,0.000,0.829]  EE_err=1439.3 mm
+  t=  3.01s  [RAMP        ]  EE=[0.161,0.000,0.829]  EE_err=1440.8 mm
+  t=  3.26s  [RAMP        ]  EE=[0.162,0.000,0.831]  EE_err=1438.4 mm
+  t=  3.51s  [RAMP        ]  EE=[0.168,0.000,0.841]  EE_err=1426.5 mm
+  t=  3.76s  [RAMP        ]  EE=[0.179,0.000,0.867]  EE_err=1399.4 mm
+  t=  4.02s  [RAMP        ]  EE=[0.199,0.000,0.909]  EE_err=1353.7 mm
+  t=  4.27s  [RAMP        ]  EE=[0.231,0.000,0.967]  EE_err=1288.3 mm
+  t=  4.52s  [RAMP        ]  EE=[0.274,0.000,1.039]  EE_err=1204.1 mm
+  t=  4.77s  [RAMP        ]  EE=[0.329,0.000,1.124]  EE_err=1103.7 mm
+  t=  5.02s  [RAMP        ]  EE=[0.393,0.000,1.217]  EE_err=990.7 mm
+  t=  5.28s  [RAMP        ]  EE=[0.464,0.000,1.316]  EE_err=869.5 mm
+  t=  5.53s  [RAMP        ]  EE=[0.537,0.000,1.417]  EE_err=744.5 mm
+  t=  5.78s  [RAMP        ]  EE=[0.611,0.000,1.518]  EE_err=619.8 mm
+  t=  6.03s  [RAMP        ]  EE=[0.682,0.000,1.616]  EE_err=498.8 mm
+  t=  6.28s  [RAMP        ]  EE=[0.749,0.000,1.708]  EE_err=384.6 mm
+  t=  6.54s  [RAMP        ]  EE=[0.811,0.000,1.793]  EE_err=279.7 mm
+  t=  6.79s  [RAMP        ]  EE=[0.868,0.000,1.869]  EE_err=186.3 mm
+  t=  7.04s  [RAMP        ]  EE=[0.918,0.000,1.933]  EE_err=106.4 mm
+  t=  7.29s  [RAMP        ]  EE=[0.960,0.000,1.984]  EE_err=43.4 mm
+  t=  7.54s  [RAMP        ]  EE=[0.993,0.000,2.020]  EE_err=21.3 mm
+  t=  7.80s  [RAMP        ]  EE=[1.017,0.000,2.042]  EE_err=45.3 mm
+  t=  8.05s  [HOLD        ]  EE=[1.031,0.000,2.048]  EE_err=56.7 mm
+  t=  8.30s  [HOLD        ]  EE=[1.033,0.000,2.040]  EE_err=51.5 mm
+  t=  8.55s  [HOLD        ]  EE=[1.025,0.000,2.026]  EE_err=36.0 mm
+  t=  8.80s  [HOLD        ]  EE=[1.011,0.000,2.013]  EE_err=17.2 mm
+  t=  9.05s  [HOLD        ]  EE=[0.998,0.000,2.002]  EE_err=3.2 mm
+  t=  9.30s  [HOLD        ]  EE=[0.988,0.000,1.995]  EE_err=12.5 mm
+  t=  9.55s  [HOLD        ]  EE=[0.985,0.000,1.992]  EE_err=17.2 mm
+  t=  9.80s  [HOLD        ]  EE=[0.987,0.000,1.991]  EE_err=16.0 mm
+  t= 10.05s  [HOLD        ]  EE=[0.992,0.000,1.992]  EE_err=11.2 mm
+  t= 10.30s  [HOLD        ]  EE=[0.999,0.000,1.993]  EE_err=7.1 mm
+  t= 10.55s  [HOLD        ]  EE=[1.005,0.000,1.994]  EE_err=7.7 mm
+  t= 10.80s  [HOLD        ]  EE=[1.008,0.000,1.995]  EE_err=9.5 mm
+  t= 11.05s  [HOLD        ]  EE=[1.008,0.000,1.996]  EE_err=9.3 mm
+  t= 11.30s  [HOLD        ]  EE=[1.006,0.000,1.996]  EE_err=7.2 mm
+  t= 11.55s  [HOLD        ]  EE=[1.003,0.000,1.996]  EE_err=4.5 mm
+  t= 11.80s  [HOLD        ]  EE=[0.999,0.000,1.996]  EE_err=3.8 mm
+  t= 12.05s  [HOLD        ]  EE=[0.997,0.000,1.996]  EE_err=4.9 mm
+  t= 12.30s  [HOLD        ]  EE=[0.996,0.000,1.997]  EE_err=5.4 mm
+  t= 12.55s  [HOLD        ]  EE=[0.996,0.000,1.997]  EE_err=4.7 mm
+  t= 12.80s  [HOLD        ]  EE=[0.998,0.000,1.997]  EE_err=3.5 mm
+
+Simulation complete.  Close viewer to compute indices and plot.
+
+=== Done ===
+Final EE position : [0.9995 0.     1.9974]
+Final EE error    : 2.7 mm
+Final EE speed    : 7.40 mm/s  (vx=7.31  vy=0.00  vz=1.16 mm/s)
+/home/zhiyang/AM_dynamics/basic/pid_tuning_hover.py:188: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  IAE  = float(np.trapz(e_m,        t_m))
+/home/zhiyang/AM_dynamics/basic/pid_tuning_hover.py:189: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  ISE  = float(np.trapz(e_m ** 2,   t_m))
+/home/zhiyang/AM_dynamics/basic/pid_tuning_hover.py:190: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+  ITAE = float(np.trapz(tr_m * e_m, t_m))
+
+==================================================
+  PERFORMANCE INDICES
+==================================================
+  Step distance              : 1.4403 m
+  Settling band (5%)         : 0.0720 m
+--------------------------------------------------
+  Integral indices  (ramp + hold, t=0 at ramp start)
+    IAE   [m·s]              : 3.7920
+    ISE   [m²·s]             : 4.1631
+    ITAE  [m·s²]             : 5.9935
+--------------------------------------------------
+  Step-response indices  (w.r.t. TARGET)
+    Rise time    (90%)   [s] : 3.914
+    Settling time (5%)   [s] : 4.166
+    Overshoot            [%] : 3.95
+    Steady-state error   [m] : 0.0051
+--------------------------------------------------
+  Hold-phase tracking
+    RMSE             [m]     : 0.0197
+    MAE              [m]     : 0.0137
+    Max error        [m]     : 0.0569
+--------------------------------------------------
+  Attitude RMSE  (hold phase)
+    Roll             [deg]   : 0.000
+    Pitch            [deg]   : 0.021
+    Yaw              [deg]   : 0.000
+--------------------------------------------------
+  Control effort  (ramp + hold)
+    Mean thrust      [N]     : 18.348
+    Thrust variation [N]     : 2.123
+==================================================
+Plot saved → /home/zhiyang/AM_dynamics/basic/pid_tuning_hover_p2p.png

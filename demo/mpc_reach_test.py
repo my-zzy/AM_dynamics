@@ -66,8 +66,8 @@ def get_am_state(mj_model, mj_data):
 HOVER_START  = np.array([0.0, 0.0, 1.0])   # drone base hover setpoint
 EE_TARGET    = np.array([1.0, 0.0, 2.0])   # box / grasp target (world frame)
 
-EE_POS_TOL   = 0.015    # 15 mm — "arrived" threshold
-EE_VEL_TOL   = 0.05     # 5 cm/s
+EE_POS_TOL   = 0.010    # 10 mm — matches OCP terminal constraint tolerance
+EE_VEL_TOL   = 0.010    # 1 cm/s — matches OCP terminal constraint tolerance
 
 PID_GAINS = dict(
     kp_z=10.0, ki_z=2.0, kd_z=6.0,
@@ -183,7 +183,7 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
                             'ee_x', 'ee_z',
                             'ref_x', 'ref_z',
                             'drone_x', 'drone_z',
-                            'ee_err', 'solve_ms',
+                            'ee_pos', 'ee_err', 'solve_ms',
                             'th1', 'th2', 'th1d', 'th2d')}
 
     # ----------------------------------------------------------------
@@ -292,6 +292,7 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
             log['ref_z'].append(p_ref[2])
             log['drone_x'].append(st['pos'][0])
             log['drone_z'].append(st['pos'][2])
+            log['ee_pos'].append(p_ee.copy())
             log['ee_err'].append(np.linalg.norm(p_ee - EE_TARGET) * 1000)
             log['th1'].append(np.rad2deg(st['theta'][0]))
             log['th2'].append(np.rad2deg(st['theta'][1]))
@@ -328,6 +329,7 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
         if log['solve_ms']:
             sms = np.array(log['solve_ms'])
             print(f'MPC solve time    : mean={sms.mean():.2f} ms  max={sms.max():.2f} ms')
+        _print_reach_indices(log, sim_dt)
         if viewer is not None:
             print('Close viewer to exit.')
             while viewer.is_running():
@@ -341,6 +343,103 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
         loop_body(None)
 
     plot_results(log, EE_TARGET, traj)
+
+
+# ---------------------------------------------------------------------------
+# Performance indices
+# ---------------------------------------------------------------------------
+
+def compute_reach_indices(log, sim_dt):
+    """Compute EE reach performance indices for comparison with pid_tuning_hover.
+
+    Indices
+    -------
+    reach_time   [s]    – time from reach-phase start until EE first enters
+                          EE_POS_TOL ball around target (nan = timed out)
+    IAE          [m·s]  – integral absolute EE error (reach phase)
+    ISE          [m²·s] – integral squared EE error (reach phase)
+    ITAE         [m·s²] – time-weighted IAE (reach phase)
+    final_err_mm [mm]   – EE error at the end of the reach phase
+    rmse_hold_mm [mm]   – EE error RMSE during hold phase
+    path_len     [m]    – total EE path length during reach
+    path_eff     –       straight-line / path_len  (1 = perfectly straight)
+    solve_mean_ms [ms]  – mean MPC solve time  (nan if not MPC)
+    solve_max_ms  [ms]  – max  MPC solve time  (nan if not MPC)
+    """
+    t      = np.array(log['t'])
+    ee_err = np.array(log['ee_err']) / 1000.0   # mm → m
+    ee_pos = np.array(log['ee_pos'])             # (N, 3)
+    phases = np.array(log['phase'])
+
+    mask_reach = phases == 1
+    mask_hold  = phases == 2
+
+    if not mask_reach.any():
+        return {}
+
+    t_reach_start = t[mask_reach][0]
+    t_rel = np.clip(t - t_reach_start, 0.0, None)
+
+    t_r  = t[mask_reach]
+    e_r  = ee_err[mask_reach]
+    tr_r = t_rel[mask_reach]
+
+    IAE  = float(np.trapz(e_r,        t_r))
+    ISE  = float(np.trapz(e_r ** 2,   t_r))
+    ITAE = float(np.trapz(tr_r * e_r, t_r))
+
+    in_tol = (ee_err < EE_POS_TOL) & mask_reach
+    reach_time = float(t_rel[np.argmax(in_tol)]) if in_tol.any() else float('nan')
+
+    final_err_mm = float(e_r[-1] * 1000)
+
+    rmse_hold_mm = (float(np.sqrt(np.mean(ee_err[mask_hold] ** 2)) * 1000)
+                    if mask_hold.any() else float('nan'))
+
+    pos_r = ee_pos[mask_reach]
+    if pos_r.shape[0] > 1:
+        path_len = float(np.sum(np.linalg.norm(np.diff(pos_r, axis=0), axis=1)))
+        straight = float(np.linalg.norm(pos_r[-1] - pos_r[0]))
+        path_eff = straight / path_len if path_len > 0 else float('nan')
+    else:
+        path_len = path_eff = float('nan')
+
+    if log['solve_ms']:
+        sms = np.array(log['solve_ms'])
+        solve_mean_ms, solve_max_ms = float(sms.mean()), float(sms.max())
+    else:
+        solve_mean_ms = solve_max_ms = float('nan')
+
+    return dict(
+        reach_time=reach_time,
+        IAE=IAE, ISE=ISE, ITAE=ITAE,
+        final_err_mm=final_err_mm,
+        rmse_hold_mm=rmse_hold_mm,
+        path_len=path_len,
+        path_eff=path_eff,
+        solve_mean_ms=solve_mean_ms,
+        solve_max_ms=solve_max_ms,
+    )
+
+
+def _print_reach_indices(log, sim_dt):
+    idx = compute_reach_indices(log, sim_dt)
+    if not idx:
+        return
+    rt = idx['reach_time']
+    print('\n=== EE Reach Performance Indices ===')
+    print(f"  Reach time           : {rt:.2f} s" if not np.isnan(rt)
+          else "  Reach time           : TIMEOUT")
+    print(f"  IAE  (reach) [m·s]   : {idx['IAE']:.4f}")
+    print(f"  ISE  (reach) [m²·s]  : {idx['ISE']:.6f}")
+    print(f"  ITAE (reach) [m·s²]  : {idx['ITAE']:.4f}")
+    print(f"  Final EE error [mm]  : {idx['final_err_mm']:.1f}")
+    print(f"  RMSE hold    [mm]    : {idx['rmse_hold_mm']:.1f}")
+    print(f"  Path length  [m]     : {idx['path_len']:.3f}")
+    print(f"  Path efficiency      : {idx['path_eff']:.3f}  (1 = straight line)")
+    if not np.isnan(idx['solve_mean_ms']):
+        print(f"  Solve time mean [ms] : {idx['solve_mean_ms']:.2f}")
+        print(f"  Solve time max  [ms] : {idx['solve_max_ms']:.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +540,88 @@ def plot_results(log, ee_target, traj):
     out = os.path.join(os.path.dirname(__file__), 'mpc_reach_test.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f'Plot saved → {out}')
+
+    # ── Approach zoom: last ZOOM_DUR s of reach + first ZOOM_DUR/2 s of hold ─
+    ZOOM_DUR = 2.0   # seconds before phase transition to show
+    mask_reach = ph == 1
+    mask_hold  = ph == 2
+    if mask_reach.any():
+        t_transition = t[mask_reach][-1]
+        t_zoom_start = t_transition - ZOOM_DUR
+        t_zoom_end   = (t[mask_hold][-1] if mask_hold.any()
+                        else t_transition) - t_transition + t_transition + ZOOM_DUR / 2
+        t_zoom_end   = min(t_zoom_end, t[-1])
+        zoom_mask = (t >= t_zoom_start) & (t <= t_zoom_end)
+
+        ee_x_arr = np.array(log['ee_x'])
+        ee_z_arr = np.array(log['ee_z'])
+        ref_x_arr = np.array(log['ref_x'])
+        ref_z_arr = np.array(log['ref_z'])
+        ee_err_arr = np.array(log['ee_err'])
+        ee_pos_arr = np.array(log['ee_pos'])
+        vx_full = np.gradient(ee_x_arr, t)
+        vz_full = np.gradient(ee_z_arr, t)
+        vy_full = (np.gradient(ee_pos_arr[:, 1], t)
+                   if ee_pos_arr.shape[1] > 1 else np.zeros_like(vx_full))
+        v_norm_full = np.sqrt(vx_full**2 + vy_full**2 + vz_full**2)
+
+        tz  = t[zoom_mask]
+        phz = ph[zoom_mask]
+
+        fig2, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+        fig2.suptitle(
+            f'Approach zoom  (last {ZOOM_DUR:.0f} s of reach + {ZOOM_DUR/2:.1f} s of hold)\n'
+            f'target={np.round(ee_target, 3)}',
+            fontsize=11)
+
+        # Panel 1 – EE error
+        ax = axes[0]
+        ax.plot(tz, ee_err_arr[zoom_mask], color='tab:blue', lw=1.5, label='EE error')
+        ax.axhline(EE_POS_TOL * 1000, color='tab:red',  lw=1.0, ls='--',
+                   label=f'{EE_POS_TOL*1000:.0f} mm tol')
+        ax.axvline(t_transition, color='k', lw=0.8, ls=':', label='phase switch')
+        ax.set_ylabel('EE error [mm]')
+        ax.set_title('EE distance to target')
+        ax.legend(fontsize=8)
+        ax.grid(True, lw=0.4)
+        _shade_phases(ax, tz, phz)
+
+        # Panel 2 – EE x/z vs reference
+        ax = axes[1]
+        ax.plot(tz, ee_x_arr[zoom_mask],  color='tab:blue',   lw=1.5, label='EE x')
+        ax.plot(tz, ref_x_arr[zoom_mask], color='tab:blue',   lw=0.9, ls='--', label='ref x')
+        ax.plot(tz, ee_z_arr[zoom_mask],  color='tab:orange', lw=1.5, label='EE z')
+        ax.plot(tz, ref_z_arr[zoom_mask], color='tab:orange', lw=0.9, ls='--', label='ref z')
+        ax.axhline(ee_target[0], color='tab:blue',   lw=0.6, ls=':')
+        ax.axhline(ee_target[2], color='tab:orange', lw=0.6, ls=':')
+        ax.axvline(t_transition, color='k', lw=0.8, ls=':')
+        ax.set_ylabel('position [m]')
+        ax.set_title('EE x/z  (dashed=ref  dotted=target)')
+        ax.legend(fontsize=8, ncol=2)
+        ax.grid(True, lw=0.4)
+        _shade_phases(ax, tz, phz)
+
+        # Panel 3 – EE speed
+        ax = axes[2]
+        ax.plot(tz, vx_full[zoom_mask],     color='tab:blue',   lw=1.2, label='v_EE x')
+        ax.plot(tz, vz_full[zoom_mask],     color='tab:orange', lw=1.2, label='v_EE z')
+        ax.plot(tz, v_norm_full[zoom_mask], color='k',          lw=1.5, label='‖v_EE‖')
+        ax.axhline(EE_VEL_TOL, color='tab:red', lw=1.0, ls='--',
+                   label=f'{EE_VEL_TOL*100:.0f} cm/s tol')
+        ax.axhline(0.0, color='gray', lw=0.6, ls='--')
+        ax.axvline(t_transition, color='k', lw=0.8, ls=':')
+        ax.set_xlabel('time [s]')
+        ax.set_ylabel('m/s')
+        ax.set_title('EE velocity')
+        ax.legend(fontsize=8, ncol=2)
+        ax.grid(True, lw=0.4)
+        _shade_phases(ax, tz, phz)
+
+        fig2.tight_layout()
+        out2 = os.path.join(os.path.dirname(__file__), 'mpc_reach_zoom.png')
+        fig2.savefig(out2, dpi=150, bbox_inches='tight')
+        print(f'Approach zoom plot saved → {out2}')
+
     try:
         plt.show()
     except Exception:

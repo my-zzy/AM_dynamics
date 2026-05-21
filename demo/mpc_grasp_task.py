@@ -282,6 +282,12 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     mpc_step_counter = 0
     mpc_steps_per_solve = max(1, int(round(dt_mpc / sim_dt)))  # solve every N sim steps
 
+    # Precompute joint DOF indices for gravity feed-forward
+    _j1_dof = mj_model.jnt_dofadr[
+        mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')]
+    _j2_dof = mj_model.jnt_dofadr[
+        mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
+
     # Reset
     mujoco.mj_resetData(mj_model, mj_data)
     base_jnt_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'free_joint')
@@ -436,6 +442,8 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
 
             t  = mj_data.time - t0_sim
             st = get_grasp_state(mj_model, mj_data)
+            bias = np.array([mj_data.qfrc_bias[_j1_dof],
+                             mj_data.qfrc_bias[_j2_dof]])
 
             # Trajectory logging
             log['t'].append(t)
@@ -467,7 +475,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
@@ -484,7 +492,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
@@ -538,7 +546,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                      HOVER_PRE_MPC, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
                 # Hold arm at its current IK angles via PD
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=gripper_close)
 
             # ----------------------------------------------------------------
@@ -556,7 +564,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 apply_platform_control(mj_data, T, tau)
 
                 # Hold arm at its frozen pose (set in enter_phase)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
@@ -571,7 +579,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
@@ -586,7 +594,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=(elapsed < 0.5))
 
             # ----------------------------------------------------------------
@@ -603,7 +611,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'])
+                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------

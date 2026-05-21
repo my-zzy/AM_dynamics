@@ -248,15 +248,14 @@ def _build_ocp(traj, model, N, dt,
 
     # Terminal constraints
     if enable_terminal_constraint:
-        p_ee_final = traj._p(traj.T_f)  # (3,)
-        # [p_EE(3), v_A(3), theta_dot(2)]
-        lh_e = np.concatenate([p_ee_final, np.zeros(3), np.zeros(2)])
-        uh_e = lh_e.copy()
-        tol_e = 1e-2                     # 1 cm / 0.01 rad-s^-1 tolerance
-        lh_e[:3] -= tol_e
-        uh_e[:3] += tol_e
-        lh_e[3:] -= tol_e
-        uh_e[3:] += tol_e
+        # Use zeros as placeholder — actual values are always overwritten by
+        # _update_references() before the first solve(), so the OCP structure
+        # is identical regardless of which trajectory is being used.  This
+        # prevents acados from detecting a JSON mismatch and forcing a rebuild
+        # every time the trajectory endpoint changes between scripts.
+        tol_e = 1e-2
+        lh_e = np.full(8, -tol_e)   # [p_EE(3), v_A(3), theta_dot(2)]
+        uh_e = np.full(8,  tol_e)
         ocp.constraints.lh_e = lh_e
         ocp.constraints.uh_e = uh_e
 
@@ -282,11 +281,12 @@ def _build_ocp(traj, model, N, dt,
     ocp.solver_options.integrator_type           = 'ERK'
     ocp.solver_options.sim_method_num_stages     = 4      # RK4
     ocp.solver_options.sim_method_num_steps      = 1
-    ocp.solver_options.nlp_solver_type           = 'SQP_RTI'    # SQP_RTI
+    ocp.solver_options.nlp_solver_type           = 'SQP'    # SQP_RTI
     ocp.solver_options.qp_solver                 = 'FULL_CONDENSING_HPIPM'
     ocp.solver_options.hessian_approx            = 'GAUSS_NEWTON'
     ocp.solver_options.nlp_solver_max_iter       = 50     # full SQP for diagnosis
     ocp.solver_options.qp_solver_cond_N          = N
+    ocp.solver_options.qp_solver_iter_max        = 30    # default 30 → too low for aggressive trajectories
     ocp.solver_options.print_level               = 0
 
     if code_export_dir is not None:
@@ -395,6 +395,9 @@ class MPCController:
         # Last applied control — used as u_prev at node 0 for the rate cost.
         # Initialised to the hover warm-start so the first solve starts smooth.
         self._u_prev = self._u_init[0].copy()
+
+        # Last u0 from a successful solve; used as fallback when QP fails.
+        self._last_good_u0 = self._u_init[0].copy()
 
     # ------------------------------------------------------------------
     # Reference update helpers
@@ -562,8 +565,13 @@ class MPCController:
                 self._x_init[k] = xk
             for k in range(self.N):
                 self._u_init[k] = self._solver.get(k, 'u')
-
-        u0 = self._solver.get(0, 'u')
+            u0 = self._solver.get(0, 'u')
+            self._last_good_u0 = u0.copy()
+        else:
+            # QP failed — return last known-good u0 and force a fresh warm-start
+            # on the next call so HPIPM gets a clean initial point.
+            u0 = self._last_good_u0.copy()
+            self._initialized = False
 
         # Update u_prev so the next solve's rate cost references the
         # input we are about to apply.
@@ -586,6 +594,7 @@ class MPCController:
         """Reset warm-start flag (e.g. after a large state jump)."""
         self._initialized = False
         self._u_prev = self._u_init[0].copy()
+        self._last_good_u0 = self._u_init[0].copy()
 
     def ee_position(self, x):
         """Compute EE world position from state vector using CasADi function."""

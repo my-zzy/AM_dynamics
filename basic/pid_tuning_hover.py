@@ -40,9 +40,13 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
+_ROOT = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, _ROOT)
 from test_model import load_model, get_state, apply_platform_control
 from pid_controller import DroneController, quat_to_euler_zyx
+from ams.model import AerialManipulatorModel
+from ams.kinematics import forward_kinematics
 
 # ===========================================================================
 #  PID GAINS  – edit to tune
@@ -64,8 +68,8 @@ GAINS = dict(
 # ===========================================================================
 #  EXPERIMENT CONFIG
 # ===========================================================================
-HOVER_START     = np.array([0.0, 0.0, 0.8])   # start hover position [m]
-TARGET          = np.array([0.4, 0.1, 2.0])   # target hover position [m]
+HOVER_START     = np.array([0.0, 0.0, 1.0])   # start hover position [m]
+TARGET          = np.array([1.0, 0.0, 2.0])   # EE target position [m]  (drone base target derived at runtime)
 YAW_TARGET      = np.deg2rad(0.0)             # desired yaw at target  [rad]
 
 HOVER_START_DUR = 3.0   # hover at start before moving    [s]
@@ -93,13 +97,19 @@ LOG_INTERVAL = 0.25   # console print interval [s]
 # ---------------------------------------------------------------------------
 #  Arm PD
 # ---------------------------------------------------------------------------
-def set_arm(data, model):
-    for jname, ctrl_idx in _ARM_MAP:
+def set_arm(data, model, arm_j_dofs=None):
+    """PD control for arm joints with optional gravity feed-forward.
+
+    arm_j_dofs: [j1_dof_idx, j2_dof_idx] from mj_model.jnt_dofadr, or None.
+    """
+    for i, (jname, ctrl_idx) in enumerate(_ARM_MAP):
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
         q   = data.qpos[model.jnt_qposadr[jid]]
         qd  = data.qvel[model.jnt_dofadr[jid]]
-        tau = np.clip(_KP_ARM * (ARM_JOINTS[jname] - q) - _KD_ARM * qd, -5.0, 5.0)
-        data.ctrl[ctrl_idx] = tau
+        tau = _KP_ARM * (ARM_JOINTS[jname] - q) - _KD_ARM * qd
+        if arm_j_dofs is not None:
+            tau += data.qfrc_bias[arm_j_dofs[i]]
+        data.ctrl[ctrl_idx] = np.clip(tau, -5.0, 5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +125,16 @@ def smooth_step(t, t0, duration):
 #  Logging
 # ---------------------------------------------------------------------------
 def make_log():
-    return {'t': [], 'pos': [], 'pos_des': [], 'rpy': [], 'rpy_des': [],
-            'thrust': [], 'phase': []}
+    return {'t': [], 'pos': [], 'pos_des': [], 'ee_pos': [],
+            'rpy': [], 'rpy_des': [], 'thrust': [], 'phase': []}
 
 
-def log_step(log, t, x, pos_des, ctrl, yaw_des, T, phase):
+def log_step(log, t, x, pos_des, ctrl, yaw_des, T, phase, ee_pos):
     roll, pitch, yaw = quat_to_euler_zyx(x[6:10])
     log['t'].append(t)
     log['pos'].append(x[:3].copy())
     log['pos_des'].append(pos_des.copy())
+    log['ee_pos'].append(ee_pos.copy())
     log['rpy'].append(np.array([roll, pitch, yaw]))
     log['rpy_des'].append(np.array([ctrl.roll_des, ctrl.pitch_des, yaw_des]))
     log['thrust'].append(float(T))
@@ -146,18 +157,17 @@ def compute_indices(log, step_dist, dt_sim):
     -------
     dict of scalar index values
     """
-    t      = np.array(log['t'])
-    pos    = np.array(log['pos'])        # (N, 3)
-    pos_d  = np.array(log['pos_des'])    # (N, 3)
-    rpy    = np.array(log['rpy'])        # (N, 3) [rad]
-    rpy_d  = np.array(log['rpy_des'])    # (N, 3) [rad]
-    thrust = np.array(log['thrust'])     # (N,)
-    phases = np.array(log['phase'])      # (N,) str
+    t          = np.array(log['t'])
+    ee_pos_arr = np.array(log['ee_pos'])     # (N, 3)  EE world position
+    rpy        = np.array(log['rpy'])        # (N, 3) [rad]
+    rpy_d      = np.array(log['rpy_des'])    # (N, 3) [rad]
+    thrust     = np.array(log['thrust'])     # (N,)
+    phases     = np.array(log['phase'])      # (N,) str
 
-    # 3-D position error to the commanded setpoint
-    err3d   = np.linalg.norm(pos - pos_d, axis=1)
-    # 3-D distance to the *final* target (used for step-response indices)
-    err_tgt = np.linalg.norm(pos - TARGET, axis=1)
+    # EE distance to final target — used for all position indices
+    # (directly comparable to mpc_reach_test compute_reach_indices)
+    err3d   = np.linalg.norm(ee_pos_arr - TARGET, axis=1)
+    err_tgt = err3d
     # Per-axis attitude error [rad]
     att_err = np.abs(rpy - rpy_d)
 
@@ -352,21 +362,42 @@ def plot_results(log, title='Hover P2P'):
 #  Main simulation loop
 # ---------------------------------------------------------------------------
 def run_hover_p2p(model, data, ctrl, dt):
-    total_time = HOVER_START_DUR + P2P_RAMP + P2P_DURATION
-    step_dist  = float(np.linalg.norm(TARGET - HOVER_START))
+    # ── EE inverse kinematics (arm fixed → constant body-frame offset) ────
+    am_model = AerialManipulatorModel()
+    _q_level  = np.array([0., 0., 0., 1.])            # level drone, xyzw
+    _theta_nom = np.array([ARM_JOINTS['joint1'],
+                           ARM_JOINTS['joint2']])
+    _, p_nom, _ = forward_kinematics(am_model, _q_level,
+                                     np.zeros(3), _theta_nom)
+    ee_offset    = p_nom[3]                            # EE pos when drone at origin
+    DRONE_TARGET = TARGET - ee_offset                  # drone base → EE lands at TARGET
+    EE_START     = HOVER_START + ee_offset             # EE pos at start hover
 
+    step_dist = float(np.linalg.norm(TARGET - EE_START))  # EE step distance
+
+    # ── Precompute joint DOF indices for gravity feed-forward ─────────────
+    arm_j_dofs = [
+        model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')],
+        model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')],
+    ]
+
+    total_time = HOVER_START_DUR + P2P_RAMP + P2P_DURATION
     t0_wall  = time.perf_counter()
     t0_sim   = data.time
     last_log = -LOG_INTERVAL
     log      = make_log()
 
-    print(f'\n=== Hover P2P ===')
-    print(f'  Phase 1 – START HOVER : {HOVER_START}  for {HOVER_START_DUR:.1f} s')
-    print(f'  Phase 2 – RAMP        : {P2P_RAMP:.1f} s  →  {TARGET}')
-    print(f'  Phase 3 – HOLD        : {P2P_DURATION:.1f} s  at {TARGET}')
-    print(f'  Step distance         : {step_dist:.4f} m')
+    print(f'\n=== Hover P2P  (EE → TARGET) ===')
+    print(f'  EE start              : {np.round(EE_START, 4)}')
+    print(f'  EE target  (TARGET)   : {TARGET}')
+    print(f'  Drone base target     : {np.round(DRONE_TARGET, 4)}')
+    print(f'  EE step distance      : {step_dist:.4f} m')
+    print(f'  EE offset             : {np.round(ee_offset, 4)}')
     print(f'  Arm joints            : joint1={ARM_JOINTS["joint1"]:.3f}  '
           f'joint2={ARM_JOINTS["joint2"]:.3f} rad')
+    print(f'  Phase 1 – START HOVER : {HOVER_START_DUR:.1f} s')
+    print(f'  Phase 2 – RAMP        : {P2P_RAMP:.1f} s')
+    print(f'  Phase 3 – HOLD        : {P2P_DURATION:.1f} s')
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer.sync()
@@ -375,8 +406,14 @@ def run_hover_p2p(model, data, ctrl, dt):
                 break
 
             t = data.time - t0_sim
+            x = get_state(model, data)
 
-            # ── Determine phase and setpoint ──────────────────────────────
+            # ── EE position via forward kinematics ────────────────────────
+            _, p_ee_frames, _ = forward_kinematics(am_model, x[6:10],
+                                                   x[:3], x[13:15])
+            ee_pos = p_ee_frames[3]
+
+            # ── Determine phase and drone-base setpoint ───────────────────
             if t < HOVER_START_DUR:
                 pos_des = HOVER_START.copy()
                 yaw_des = 0.0
@@ -384,31 +421,29 @@ def run_hover_p2p(model, data, ctrl, dt):
 
             elif t < HOVER_START_DUR + P2P_RAMP:
                 s       = smooth_step(t, HOVER_START_DUR, P2P_RAMP)
-                pos_des = HOVER_START + s * (TARGET - HOVER_START)
+                pos_des = HOVER_START + s * (DRONE_TARGET - HOVER_START)
                 yaw_des = s * YAW_TARGET
                 phase   = 'RAMP'
 
             else:
-                pos_des = TARGET.copy()
+                pos_des = DRONE_TARGET.copy()
                 yaw_des = YAW_TARGET
                 phase   = 'HOLD'
 
             # ── Control ───────────────────────────────────────────────────
-            x      = get_state(model, data)
             T, tau = ctrl.compute(x[:3], x[3:6], x[6:10], x[10:13],
                                   pos_des, yaw_des, dt)
             apply_platform_control(data, T, tau)
-            set_arm(data, model)
+            set_arm(data, model, arm_j_dofs)
             mujoco.mj_step(model, data)
-            log_step(log, t, x, pos_des, ctrl, yaw_des, T, phase)
+            log_step(log, t, x, pos_des, ctrl, yaw_des, T, phase, ee_pos)
 
             # ── Console output ────────────────────────────────────────────
             if t - last_log >= LOG_INTERVAL:
-                err = np.linalg.norm(x[:3] - pos_des)
+                ee_err = np.linalg.norm(ee_pos - TARGET)
                 print(f'  t={t:6.2f}s  [{phase:12s}]  '
-                      f'pos=[{x[0]:.3f},{x[1]:.3f},{x[2]:.3f}]  '
-                      f'des=[{pos_des[0]:.3f},{pos_des[1]:.3f},{pos_des[2]:.3f}]  '
-                      f'err={err:.4f} m')
+                      f'EE=[{ee_pos[0]:.3f},{ee_pos[1]:.3f},{ee_pos[2]:.3f}]  '
+                      f'EE_err={ee_err*1000:.1f} mm')
                 last_log = t
 
             # ── Real-time pacing ──────────────────────────────────────────
@@ -421,6 +456,24 @@ def run_hover_p2p(model, data, ctrl, dt):
         print('\nSimulation complete.  Close viewer to compute indices and plot.')
         while viewer.is_running():
             time.sleep(0.05)
+
+    # ── Final EE stats (mirrors mpc_reach_test output) ────────────────────
+    ee_pos_arr = np.array(log['ee_pos'])
+    t_arr      = np.array(log['t'])
+    final_ee_err = float(np.linalg.norm(ee_pos_arr[-1] - TARGET))
+    if len(t_arr) >= 2:
+        dt_last  = t_arr[-1] - t_arr[-2]
+        ee_vel_f = (ee_pos_arr[-1] - ee_pos_arr[-2]) / dt_last if dt_last > 0 else np.zeros(3)
+        ee_spd_f = float(np.linalg.norm(ee_vel_f))
+    else:
+        ee_vel_f = np.zeros(3)
+        ee_spd_f = 0.0
+    print(f'\n=== Done ===')
+    print(f'Final EE position : {np.round(ee_pos_arr[-1], 4)}')
+    print(f'Final EE error    : {final_ee_err*1000:.1f} mm')
+    print(f'Final EE speed    : {ee_spd_f*1000:.2f} mm/s'
+          f'  (vx={ee_vel_f[0]*1000:.2f}  vy={ee_vel_f[1]*1000:.2f}'
+          f'  vz={ee_vel_f[2]*1000:.2f} mm/s)')
 
     # ── Post-run analysis ─────────────────────────────────────────────────
     idx = compute_indices(log, step_dist, dt)
