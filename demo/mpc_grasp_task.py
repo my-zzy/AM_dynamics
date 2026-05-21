@@ -125,8 +125,8 @@ def clear_mpc_forces(model, data):
 # PD arm hold (used outside MPC phases)
 # ---------------------------------------------------------------------------
 
-KP_ARM = 8.0
-KD_ARM = 0.8
+KP_ARM = 3.0
+KD_ARM = 0.3
 
 
 def apply_arm_pd(data, theta_des, theta_cur, theta_dot, bias=None):
@@ -190,10 +190,6 @@ def plot_trajectories(log):
 
     # ── 2-D xz trajectory (left column, spans all rows) ─────────────────────
     ax2d = fig.add_subplot(gs[:, 0])
-    ax2d.plot(drone[:, 0], drone[:, 2],
-              color='tab:blue', linewidth=1.5, label='Drone base')
-    ax2d.scatter(drone[0, 0],  drone[0, 2],  color='tab:blue',   s=60, marker='o', zorder=5)
-    ax2d.scatter(drone[-1, 0], drone[-1, 2], color='tab:blue',   s=60, marker='x', zorder=5)
     ax2d.plot(ee[:, 0], ee[:, 2],
               color='tab:orange', linewidth=1.5, label='Gripper EE')
     ax2d.scatter(ee[0, 0],  ee[0, 2],  color='tab:orange', s=60, marker='o', zorder=5)
@@ -205,7 +201,7 @@ def plot_trajectories(log):
     ax2d.set_xlabel('x [m]')
     ax2d.set_ylabel('z [m]')
     ax2d.legend(fontsize=8)
-    ax2d.set_title('xz Trajectory  (o=start  x=end)')
+    ax2d.set_title('xz EE Trajectory  (o=start  x=end)')
     ax2d.grid(True, linewidth=0.4)
     ax2d.set_aspect('equal')
 
@@ -214,7 +210,6 @@ def plot_trajectories(log):
     for i in range(3):
         ax = fig.add_subplot(gs[i, 1])
         add_phase_spans(ax)
-        ax.plot(t, drone[:, i], color='tab:blue',   linewidth=1.2, label='Drone base')
         ax.plot(t, ee[:, i],    color='tab:orange', linewidth=1.2, label='Gripper EE')
         ax.plot(t, box[:, i],   color='tab:green',  linewidth=1.2, linestyle='--', label='Box')
         ax.set_ylabel(pos_labels[i])
@@ -250,6 +245,83 @@ def plot_trajectories(log):
     out_path = os.path.join(os.path.dirname(__file__), 'mpc_grasp_trajectory.png')
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f'Trajectory plot saved \u2192 {out_path}')
+    try:
+        plt.show()
+    except Exception:
+        pass
+
+
+def plot_mpc_reach_phase(log):
+    """Dedicated plot for the MPC reach phase (phase 2), mirroring grasp_task.plot_approach_phase."""
+    import matplotlib.pyplot as plt
+
+    t      = np.array(log['t'])
+    phases = np.array(log['phase'])
+    drone  = np.array(log['drone_pos'])
+    ee     = np.array(log['ee_pos'])
+
+    mask = phases == 2
+    if not np.any(mask):
+        print('No MPC-reach-phase data to plot.')
+        return
+
+    t_ap    = t[mask]
+    drone_ap = drone[mask]
+    ee_ap   = ee[mask]
+    ee_err  = np.linalg.norm(ee_ap - BOX_TARGET, axis=1) * 1000   # mm
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    fig.suptitle(
+        f'MPC Reach Phase  (t = {t_ap[0]:.1f} \u2013 {t_ap[-1]:.1f} s)   '
+        f'target={np.round(BOX_TARGET, 3)}',
+        fontsize=12)
+
+    # ── Left: xz spatial plot ──────────────────────────────────────────────
+    ax = axes[0]
+    ax.plot(drone_ap[:, 0], drone_ap[:, 2],
+            color='tab:blue', lw=1.5, label='Drone base')
+    ax.scatter(drone_ap[0, 0],  drone_ap[0, 2],  color='tab:blue', s=70, marker='o', zorder=6)
+    ax.scatter(drone_ap[-1, 0], drone_ap[-1, 2], color='tab:blue', s=70, marker='x', zorder=6)
+    ax.plot(ee_ap[:, 0], ee_ap[:, 2],
+            color='tab:orange', lw=1.8, label='Gripper EE')
+    ax.scatter(ee_ap[0, 0],  ee_ap[0, 2],  color='tab:orange', s=70, marker='o', zorder=6)
+    ax.scatter(ee_ap[-1, 0], ee_ap[-1, 2], color='tab:orange', s=70, marker='x', zorder=6)
+    ax.scatter(BOX_TARGET[0], BOX_TARGET[2], color='limegreen', s=240,
+               marker='*', zorder=7, label='Grasp target')
+    ax.set_xlabel('x [m]')
+    ax.set_ylabel('z [m]')
+    ax.set_title('xz Trajectory  (o = start,  x = end)')
+    ax.set_aspect('equal')
+    ax.legend(fontsize=9)
+    ax.grid(True, lw=0.4)
+
+    # ── Right: EE x/z vs time + EE error ─────────────────────────────────
+    ax = axes[1]
+    ax2 = ax.twinx()
+
+    ax.plot(t_ap, ee_ap[:, 0],  color='tab:orange', lw=1.5, label='EE x')
+    ax.plot(t_ap, ee_ap[:, 2],  color='darkorange',  lw=1.5, ls='--', label='EE z')
+    ax.axhline(BOX_TARGET[0], color='tab:orange', lw=0.8, ls=':', label='Target x')
+    ax.axhline(BOX_TARGET[2], color='darkorange',  lw=0.8, ls=':', label='Target z')
+    ax.set_xlabel('time [s]')
+    ax.set_ylabel('EE position [m]')
+
+    ax2.plot(t_ap, ee_err, color='tab:red', lw=1.5, alpha=0.7, label='EE error')
+    ax2.axhline(EE_POS_TOL * 1000, color='tab:red', lw=1.0, ls='--',
+                label=f'{EE_POS_TOL*1000:.0f} mm tol')
+    ax2.set_ylabel('EE error [mm]', color='tab:red')
+    ax2.tick_params(axis='y', labelcolor='tab:red')
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=7, ncol=2)
+    ax.set_title('EE x/z vs time  (dotted = target)  |  red = EE error')
+    ax.grid(True, lw=0.4)
+
+    plt.tight_layout()
+    out_path = os.path.join(os.path.dirname(__file__), 'mpc_reach_phase.png')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    print(f'MPC reach phase plot saved \u2192 {out_path}')
     try:
         plt.show()
     except Exception:
@@ -396,7 +468,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         elif new_phase == 7:
             _retract_start = st['theta'].copy()
 
-    def advance_phase(t, st):
+    def advance_phase(t, st, p_ee):
         """Check if current phase is done and transition."""
         elapsed = t - phase_t0
         if phase == 0 and t >= PHASE_END[0]:
@@ -405,7 +477,6 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             enter_phase(2, t, st)
         elif phase == 2:
             # Terminate on arrival or timeout
-            p_ee = ee_pos_from_state(am_model, st)
             ee_err = np.linalg.norm(p_ee - BOX_TARGET)
             v_ee   = np.linalg.norm(st['vel'])
             arrived = (ee_err < EE_POS_TOL and v_ee < EE_VEL_TOL)
@@ -444,19 +515,20 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             st = get_grasp_state(mj_model, mj_data)
             bias = np.array([mj_data.qfrc_bias[_j1_dof],
                              mj_data.qfrc_bias[_j2_dof]])
+            p_ee_fk = ee_pos_from_state(am_model, st)
 
             # Trajectory logging
             log['t'].append(t)
             log['phase'].append(phase)
             log['drone_pos'].append(st['pos'].copy())
-            log['ee_pos'].append(mj_data.site_xpos[ee_site_id].copy())
+            log['ee_pos'].append(p_ee_fk.copy())
             log['box_pos'].append(get_box_pos(mj_model, mj_data))
             log['theta'].append(st['theta'].copy())
             log['theta_des'].append(theta_des.copy())
             log['hover_des'].append(hover_des.copy())
 
             # Phase transitions
-            advance_phase(t, st)
+            advance_phase(t, st, p_ee_fk)
 
             elapsed = t - phase_t0
 
@@ -509,8 +581,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                         last_u0 = u0_new
                         solve_times.append(info['solve_time'])
                         if mpc_step_counter % (mpc_steps_per_solve * 20) == 0:
-                            p_ee = ee_pos_from_state(am_model, st)
-                            ee_err = np.linalg.norm(p_ee - BOX_TARGET)
+                            ee_err = np.linalg.norm(p_ee_fk - BOX_TARGET)
                             ee_errors.append(ee_err)
                             print(f'  [t={t:.2f}s] ee_err={ee_err*1000:.1f} mm  '
                                   f'solve={info["solve_time"]*1000:.2f} ms  '
@@ -543,7 +614,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 clear_mpc_forces(mj_model, mj_data)
 
                 T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
-                                     HOVER_PRE_MPC, 0.0, sim_dt)
+                                     hover_prev, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
                 # Hold arm at its current IK angles via PD
                 apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
@@ -655,6 +726,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         sim_loop(None)
 
     plot_trajectories(log)
+    plot_mpc_reach_phase(log)
 
 
 # ---------------------------------------------------------------------------
