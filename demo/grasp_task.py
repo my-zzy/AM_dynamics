@@ -401,7 +401,8 @@ GAINS = dict(
 )
 
 
-def run_grasp(method=None, use_viewer=True, plot=True):
+def run_grasp(method=None, use_viewer=True, plot=True,
+              wind_force=None, mass_scale=1.0):
     """Run the grasp task simulation.
 
     Parameters
@@ -413,6 +414,13 @@ def run_grasp(method=None, use_viewer=True, plot=True):
         Open an interactive MuJoCo viewer window.  Set False for headless runs.
     plot : bool
         Save and show trajectory plots at the end.
+    wind_force : array-like (3,) or None
+        Constant world-frame force [N] applied to the drone body every sim
+        step.  None disables the disturbance.
+    mass_scale : float
+        Multiply every robot body mass (and inertia) by this factor in the
+        MuJoCo model.  The PID controller keeps its nominal mass so that the
+        test reflects real-world model mismatch.  Default 1.0 (no change).
 
     Returns
     -------
@@ -429,8 +437,17 @@ def run_grasp(method=None, use_viewer=True, plot=True):
         i for i in range(model.nbody)
         if mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) not in _exclude
     ]
-    total_mass = sum(model.body_mass[i] for i in robot_body_ids)
-    print(f'Robot mass: {total_mass:.3f} kg  (mg = {total_mass*9.81:.2f} N)')
+    nominal_mass = sum(model.body_mass[i] for i in robot_body_ids)
+    print(f'Robot mass: {nominal_mass:.3f} kg  (mg = {nominal_mass*9.81:.2f} N)')
+
+    # Apply mass/inertia scaling to the plant (controller keeps nominal values)
+    if mass_scale != 1.0:
+        for i in robot_body_ids:
+            model.body_mass[i]     *= mass_scale
+            model.body_inertia[i]  *= mass_scale
+        mujoco.mj_forward(model, data)   # recompute derived inertial quantities
+        print(f'  mass_scale={mass_scale:.2f}: actual mass = {nominal_mass*mass_scale:.3f} kg')
+    total_mass = nominal_mass   # PID uses nominal
 
     ctrl = DroneController(mass=total_mass, **GAINS)
     dt = model.opt.timestep
@@ -438,6 +455,8 @@ def run_grasp(method=None, use_viewer=True, plot=True):
     # Precompute joint DOF addresses for gravity feedforward
     _j1_dof = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')]
     _j2_dof = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
+    _base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'base')
+    _wind    = np.asarray(wind_force, dtype=float) if wind_force is not None else None
 
     # Reset — place drone on the ground
     mujoco.mj_resetData(model, data)
@@ -656,6 +675,10 @@ def run_grasp(method=None, use_viewer=True, plot=True):
 
             # Gripper
             apply_gripper(data, close=gripper_close)
+
+            # External wind disturbance on drone body
+            if _wind is not None:
+                data.xfrc_applied[_base_id, :3] = _wind
 
             # Step
             mujoco.mj_step(model, data)

@@ -334,7 +334,20 @@ def plot_mpc_reach_phase(log):
 
 def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                   enable_terminal_constraint=True,
-                  use_viewer=True, plot=True):
+                  use_viewer=True, plot=True,
+                  wind_force=None, mass_scale=1.0):
+    """Run the MPC grasp task.
+
+    Parameters
+    ----------
+    wind_force : array-like (3,) or None
+        Constant world-frame force [N] applied to the drone body every sim
+        step.  None disables the disturbance.
+    mass_scale : float
+        Multiply every robot body mass (and inertia) by this factor in the
+        MuJoCo model.  The MPC OCP (compiled with nominal model) still uses
+        nominal values so the test reflects real-world model mismatch.
+    """
 
     mj_model, mj_data = load_grasp_scene()
     am_model = AerialManipulatorModel()
@@ -344,8 +357,17 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     robot_ids = [i for i in range(mj_model.nbody)
                  if mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, i)
                  not in _exclude]
-    total_mass = sum(mj_model.body_mass[i] for i in robot_ids)
-    print(f'Robot mass: {total_mass:.3f} kg')
+    nominal_mass = sum(mj_model.body_mass[i] for i in robot_ids)
+    print(f'Robot mass: {nominal_mass:.3f} kg')
+
+    # Apply mass/inertia scaling to the plant (MPC OCP keeps nominal values)
+    if mass_scale != 1.0:
+        for i in robot_ids:
+            mj_model.body_mass[i]    *= mass_scale
+            mj_model.body_inertia[i] *= mass_scale
+        mujoco.mj_forward(mj_model, mj_data)
+        print(f'  mass_scale={mass_scale:.2f}: actual mass = {nominal_mass*mass_scale:.3f} kg')
+    total_mass = nominal_mass   # PID and MPC use nominal
 
     # PID for platform (used during non-MPC phases)
     pid = DroneController(mass=total_mass, **GAINS)
@@ -359,6 +381,8 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')]
     _j2_dof = mj_model.jnt_dofadr[
         mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
+    _base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'base')
+    _wind    = np.asarray(wind_force, dtype=float) if wind_force is not None else None
 
     # Reset
     mujoco.mj_resetData(mj_model, mj_data)
@@ -697,6 +721,11 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             # ----------------------------------------------------------------
             # Advance simulation
             # ----------------------------------------------------------------
+            # Wind disturbance: added on top of whatever xfrc_applied holds
+            # (MPC phases: adds to MPC body wrench; PID phases: adds to zero)
+            if _wind is not None:
+                mj_data.xfrc_applied[_base_id, :3] += _wind
+
             mujoco.mj_step(mj_model, mj_data)
 
             # Real-time sync
