@@ -69,7 +69,7 @@ HOVER_PRE_MPC = HOVER_SAFE
 MPC_TRAJ_TF   = 4.0    # trajectory duration (seconds)
 
 # Terminal detection thresholds
-EE_POS_TOL  = 0.015   # 15 mm  position error to declare "arrived"
+EE_POS_TOL  = 0.005   # 5 mm  position error to declare "arrived"
 EE_VEL_TOL  = 0.05    # 5 cm/s EE velocity to declare "stopped"
 
 # After grasp, lift target
@@ -334,7 +334,7 @@ def plot_mpc_reach_phase(log):
 
 def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                   enable_terminal_constraint=True,
-                  use_viewer=True):
+                  use_viewer=True, plot=True):
 
     mj_model, mj_data = load_grasp_scene()
     am_model = AerialManipulatorModel()
@@ -402,10 +402,11 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     mpc_t0         = 0.0     # simulation time when MPC phase started
     last_u0        = None    # cached MPC output between solves
     _retract_start = np.zeros(2)
+    _min_ee_err    = np.inf  # best EE error seen in phase 2
 
     # Trajectory logging (all phases)
     ee_site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
-    log = {'t': [], 'phase': [], 'drone_pos': [], 'ee_pos': [],
+    log = {'t': [], 'phase': [], 'drone_pos': [], 'vel': [], 'quat': [], 'ee_pos': [],
            'box_pos': [], 'theta': [], 'theta_des': [], 'hover_des': []}
 
     # Logging for phase 2
@@ -416,7 +417,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         nonlocal phase, phase_t0, hover_prev, hover_des
         nonlocal theta_des, gripper_close
         nonlocal mpc_ctrl, mpc_traj, mpc_t0, last_u0
-        nonlocal _retract_start
+        nonlocal _retract_start, _min_ee_err
 
         phase    = new_phase
         phase_t0 = t
@@ -425,6 +426,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         print(f'\n[t={t:.2f}s] === Phase {new_phase}: {PHASES[new_phase]} ===')
 
         if new_phase == 2:
+            _min_ee_err = np.inf  # reset best-error tracker on phase entry
             # Build MPC trajectory: current EE → grasp point
             from demo.mpc_trajectory import EETrajectory
             from demo.mpc_controller import MPCController
@@ -470,21 +472,26 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
 
     def advance_phase(t, st, p_ee):
         """Check if current phase is done and transition."""
+        nonlocal _min_ee_err
         elapsed = t - phase_t0
         if phase == 0 and t >= PHASE_END[0]:
             enter_phase(1, t, st)
         elif phase == 1 and t >= PHASE_END[1]:
             enter_phase(2, t, st)
         elif phase == 2:
-            # Terminate on arrival or timeout
+            # Terminate when the EE has ever been within EE_POS_TOL of the
+            # target (tracked via _min_ee_err), or on timeout.
+            # Using the historical minimum avoids the QP solver becoming
+            # ill-conditioned when the EE oscillates just above the threshold.
             ee_err = np.linalg.norm(p_ee - BOX_TARGET)
             v_ee   = np.linalg.norm(st['vel'])
-            arrived = (ee_err < EE_POS_TOL and v_ee < EE_VEL_TOL)
+            _min_ee_err = min(_min_ee_err, ee_err)
+            arrived   = (_min_ee_err < EE_POS_TOL)
             timed_out = (elapsed >= MAX_PHASE_DUR[2])
             if arrived or timed_out:
                 reason = 'arrived' if arrived else 'timeout'
                 print(f'  Phase 2 ended ({reason}): '
-                      f'ee_err={ee_err*1000:.1f} mm  v={v_ee*100:.1f} cm/s')
+                      f'ee_err={ee_err*1000:.1f} mm  best={_min_ee_err*1000:.1f} mm  v={v_ee*100:.1f} cm/s')
                 enter_phase(3, t, st)
         elif phase == 3 and elapsed >= MAX_PHASE_DUR[3]:
             enter_phase(4, t, st)
@@ -521,6 +528,8 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
             log['t'].append(t)
             log['phase'].append(phase)
             log['drone_pos'].append(st['pos'].copy())
+            log['vel'].append(st['vel'].copy())
+            log['quat'].append(st['quat'].copy())
             log['ee_pos'].append(p_ee_fk.copy())
             log['box_pos'].append(get_box_pos(mj_model, mj_data))
             log['theta'].append(st['theta'].copy())
@@ -666,7 +675,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
                 apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
-                apply_gripper(mj_data, close=(elapsed < 0.5))
+                apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
             # Phase 7: RETRACT — fold arm, fly home
@@ -721,12 +730,21 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
     if use_viewer:
         with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
             viewer.sync()
+            # Freeze for 10 s so the window can be repositioned before sim starts
+            print('Simulation frozen for 10 s — reposition the window now...')
+            _freeze_end = time.perf_counter() + 10.0
+            while time.perf_counter() < _freeze_end:
+                viewer.sync()
+                time.sleep(0.05)
+            print('Starting simulation.')
             sim_loop(viewer)
     else:
         sim_loop(None)
 
-    plot_trajectories(log)
-    plot_mpc_reach_phase(log)
+    if plot:
+        plot_trajectories(log)
+        plot_mpc_reach_phase(log)
+    return log
 
 
 # ---------------------------------------------------------------------------

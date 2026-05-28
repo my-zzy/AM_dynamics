@@ -121,7 +121,7 @@ def apply_arm_pd(mj_data, theta_des, theta_cur, theta_dot, bias=None):
 # ---------------------------------------------------------------------------
 
 def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
-        rebuild=False, enable_tc=True, use_viewer=True):
+        rebuild=False, enable_tc=True, use_viewer=True, record=False):
 
     mj_model, mj_data = load_model()
     am_model = AerialManipulatorModel()
@@ -137,6 +137,18 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
 
     sim_dt   = mj_model.opt.timestep
     steps_per_solve = max(1, int(round(dt_mpc / sim_dt)))
+
+    # Camera: scene_cam is a fixed side-view camera perpendicular to the xz motion plane
+    cam_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_CAMERA, 'scene_cam')
+
+    # Off-screen renderer for optional video recording
+    _renderer  = None
+    _frames    = []
+    _frame_dt  = 1.0 / 30.0     # target 30 fps for the video
+    _last_ft   = -_frame_dt
+    if record:
+        _renderer = mujoco.Renderer(mj_model, height=720, width=1280)
+        print('Recording enabled  →  mpc_reach_test.mp4  (30 fps, scene_cam)')
 
     # Precompute joint DOF indices for gravity FF
     _j1_dof = mj_model.jnt_dofadr[
@@ -158,7 +170,7 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
     # Phase 1: MPC reach
     # Phase 2: MPC hold at target
     # ----------------------------------------------------------------
-    STAB_DUR = 5.0
+    STAB_DUR = 10.0
 
     # Determine EE start after stabilisation (use FK from nominal state)
     st_nominal = get_am_state(mj_model, mj_data)
@@ -299,6 +311,12 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
             log['th1d'].append(np.rad2deg(theta_des[0]))
             log['th2d'].append(np.rad2deg(theta_des[1]))
 
+            # ── Record ───────────────────────────────────────────
+            if _renderer is not None and (t - _last_ft) >= _frame_dt:
+                _renderer.update_scene(mj_data, camera=cam_id)
+                _frames.append(_renderer.render().copy())
+                _last_ft = t
+
             # ── Step ──────────────────────────────────────────────
             mujoco.mj_step(mj_model, mj_data)
             step_idx += 1
@@ -330,6 +348,19 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
             sms = np.array(log['solve_ms'])
             print(f'MPC solve time    : mean={sms.mean():.2f} ms  max={sms.max():.2f} ms')
         _print_reach_indices(log, sim_dt)
+        # Save video if recording was enabled
+        if _renderer is not None and _frames:
+            try:
+                import imageio
+                out_vid = os.path.join(os.path.dirname(__file__), 'mpc_reach_test.mp4')
+                imageio.mimsave(out_vid, _frames, fps=30)
+                print(f'Video saved → {out_vid}  ({len(_frames)} frames)')
+            except ImportError:
+                print('imageio not found — install it with: pip install imageio[ffmpeg]')
+            except Exception as exc:
+                print(f'Video save failed: {exc}')
+            _renderer.close()
+
         if viewer is not None:
             print('Close viewer to exit.')
             while viewer.is_running():
@@ -337,6 +368,9 @@ def run(dt_mpc=0.05, N=20, traj_dur=4.0, hold_dur=5.0, timeout=10.0,
 
     if use_viewer:
         with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+            # Point the interactive viewer at the same fixed side camera
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            viewer.cam.fixedcamid = cam_id
             viewer.sync()
             loop_body(viewer)
     else:
@@ -622,10 +656,10 @@ def plot_results(log, ee_target, traj):
         fig2.savefig(out2, dpi=150, bbox_inches='tight')
         print(f'Approach zoom plot saved → {out2}')
 
-    try:
-        plt.show()
-    except Exception:
-        pass
+    # try:
+    #     plt.show()
+    # except Exception:
+    #     pass
 
 
 def _shade_phases(ax, t, ph):
@@ -647,6 +681,7 @@ def _parse():
     p.add_argument('--rebuild',    action='store_true', help='Force acados recompile')
     p.add_argument('--no-viewer',  action='store_true', help='Run headless')
     p.add_argument('--no-tc',      action='store_true', help='Disable terminal constraint')
+    p.add_argument('--record',     action='store_true', help='Save video from scene_cam to mpc_reach_test.mp4')
     p.add_argument('--dt-mpc',     type=float, default=0.05,  metavar='S')
     p.add_argument('--horizon',    type=int,   default=20,    metavar='N')
     p.add_argument('--traj-dur',   type=float, default=4.0,   metavar='S')
@@ -667,4 +702,5 @@ if __name__ == '__main__':
         rebuild=args.rebuild,
         enable_tc=not args.no_tc,
         use_viewer=not args.no_viewer,
+        record=args.record,
     )

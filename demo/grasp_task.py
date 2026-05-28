@@ -183,9 +183,11 @@ def apply_gripper(data, close=False):
         data.ctrl[CTRL_GR] = 0.0
 
 
-def plot_approach_phase(log):
+def plot_approach_phase(log, method=None):
     """Dedicated 2-D xz plot for the approach phase (phase 3)."""
     import matplotlib.pyplot as plt
+
+    _method_label = method if method is not None else GRASP_METHOD
 
     t        = np.array(log['t'])
     phases   = np.array(log['phase'])
@@ -205,7 +207,7 @@ def plot_approach_phase(log):
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 6))
     fig.suptitle(f'Approach Phase  (t = {t_ap[0]:.1f} – {t_ap[-1]:.1f} s)   '
-                 f'method={GRASP_METHOD!r}', fontsize=12)
+                 f'method={_method_label!r}', fontsize=12)
 
     # ── Left: xz spatial plot ──────────────────────────────────────────────
     ax = axes[0]
@@ -370,7 +372,7 @@ BOX_TARGET = np.array([0.40, 0.0, 1.125])
 # 'arm_only'   – drone hovers fixed (pre-approached in phase 2), arm ramps to IK
 # 'drone_only' – arm locked at S2_JOINTS, drone flies to back-computed position
 # 'hybrid'     – drone moves to HOVER[3] while arm tracks live IK  (original)
-GRASP_METHOD = 'drone_only'
+GRASP_METHOD = 'hybrid'
 
 # Fixed joint angles used by drone_only (arm pre-aimed at box)
 S2_JOINTS = np.array([-0.2, 0.2])   # [theta1, theta2] rad
@@ -399,7 +401,27 @@ GAINS = dict(
 )
 
 
-def run_grasp():
+def run_grasp(method=None, use_viewer=True, plot=True):
+    """Run the grasp task simulation.
+
+    Parameters
+    ----------
+    method : str or None
+        One of 'arm_only', 'drone_only', 'hybrid'.  Defaults to the module-
+        level ``GRASP_METHOD`` constant when None.
+    use_viewer : bool
+        Open an interactive MuJoCo viewer window.  Set False for headless runs.
+    plot : bool
+        Save and show trajectory plots at the end.
+
+    Returns
+    -------
+    log : dict
+        Trajectory log with keys 't', 'phase', 'drone_pos', 'vel', 'quat',
+        'ee_pos', 'box_pos', 'theta', 'theta_des', 'hover_des'.
+    """
+    _method = method if method is not None else GRASP_METHOD
+
     model, data = load_grasp_scene()
     # Only sum robot bodies; exclude world, pedestal, and free box
     _exclude = {'world', 'pedestal', 'box'}
@@ -436,14 +458,14 @@ def run_grasp():
     ik_phase3 = arm_ik(HOVER[3], BOX_TARGET)
     if ik_phase3 is None:
         print('ERROR: Phase 3 IK unreachable — check setpoints!')
-        return
+        return {}
     ee3 = arm_fk(HOVER[3], *ik_phase3)
     print(f'Phase 3 IK: theta1={np.rad2deg(ik_phase3[0]):.1f}°  theta2={np.rad2deg(ik_phase3[1]):.1f}°')
     print(f'Phase 3 FK check: EE = {ee3}  (target: {BOX_TARGET})')
 
     # Method-specific pre-computation
-    print(f'\nGRASP_METHOD = {GRASP_METHOD!r}')
-    if GRASP_METHOD == 'drone_only':
+    print(f'\nGRASP_METHOD = {_method!r}')
+    if _method == 'drone_only':
         _s2_hover = drone_pos_from_joints(BOX_TARGET, S2_JOINTS[0], S2_JOINTS[1])
         ee_s2 = arm_fk(_s2_hover, S2_JOINTS[0], S2_JOINTS[1])
         print(f'  S2_JOINTS = [{np.rad2deg(S2_JOINTS[0]):.1f}°, {np.rad2deg(S2_JOINTS[1]):.1f}°]')
@@ -458,24 +480,26 @@ def run_grasp():
     # drone_only runtime state (arm start captured at phase 2 transition)
     _drone_only_arm_start = np.zeros(2)
 
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        viewer.sync()
+    t0_wall = [time.perf_counter()]
+    t0_sim = [data.time]
+    sim_duration = 50.0
+    _retract_start = np.array([0.0, 0.0])
 
-        t0_wall = time.perf_counter()
-        t0_sim = data.time
-        sim_duration = 50.0
-        _retract_start = np.array([0.0, 0.0])
+    # Trajectory logging
+    ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
+    log = {'t': [], 'drone_pos': [], 'vel': [], 'quat': [], 'ee_pos': [],
+           'box_pos': [], 'theta': [], 'theta_des': [], 'hover_des': [], 'phase': []}
 
-        # Trajectory logging
-        ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'end_effector')
-        log = {'t': [], 'drone_pos': [], 'ee_pos': [], 'box_pos': [],
-               'theta': [], 'theta_des': [], 'hover_des': [], 'phase': []}
+    def _run_sim(viewer_ctx):
+        nonlocal current_phase, phase_t0, hover_des, hover_prev, theta_des
+        nonlocal _arm_only_theta_start, _arm_only_theta_end, _drone_only_arm_start
+        nonlocal _retract_start
 
-        while data.time - t0_sim < sim_duration:
-            if not viewer.is_running():
+        while data.time - t0_sim[0] < sim_duration:
+            if viewer_ctx is not None and not viewer_ctx.is_running():
                 return
 
-            t = data.time - t0_sim
+            t = data.time - t0_sim[0]
 
             # --- Determine phase ---
             new_phase = 7
@@ -497,7 +521,7 @@ def run_grasp():
                 hover_prev[1] = 0.0
 
                 # arm_only: lock in IK target once at phase 3 start
-                if current_phase == 3 and GRASP_METHOD == 'arm_only':
+                if current_phase == 3 and _method == 'arm_only':
                     ik_ao = arm_ik(hover_prev, BOX_TARGET)
                     if ik_ao is None:
                         print('  WARNING: arm_only IK unreachable — drone too far from box')
@@ -509,7 +533,7 @@ def run_grasp():
                           f'→ {np.rad2deg(_arm_only_theta_end)} deg')
 
                 # drone_only: capture arm start position at phase 2 transition
-                if current_phase == 2 and GRASP_METHOD == 'drone_only':
+                if current_phase == 2 and _method == 'drone_only':
                     _drone_only_arm_start = st['theta'].copy()
                     print(f'  drone_only arm ramp: {np.rad2deg(_drone_only_arm_start)} '
                           f'→ {np.rad2deg(S2_JOINTS)} deg  (over phase 2)')
@@ -520,6 +544,8 @@ def run_grasp():
             # Record trajectory
             log['t'].append(t)
             log['drone_pos'].append(st['pos'].copy())
+            log['vel'].append(st['vel'].copy())
+            log['quat'].append(st['quat'].copy())
             log['ee_pos'].append(data.site_xpos[ee_site_id].copy())
             log['box_pos'].append(get_box_pos(model, data))
             log['theta'].append(st['theta'].copy())
@@ -547,11 +573,11 @@ def run_grasp():
                 #   arm_only  – drone pre-approaches to HOVER[3], arm stays folded
                 #   drone_only – drone holds, arm ramps to S2_JOINTS (pre-position)
                 #   hybrid    – drone holds, arm stays folded
-                if GRASP_METHOD == 'arm_only':
+                if _method == 'arm_only':
                     ramp_dur = 8.0
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
                     theta_des = np.array([0.0, 0.0])
-                elif GRASP_METHOD == 'drone_only':
+                elif _method == 'drone_only':
                     hover_des = HOVER[2].copy()
                     ramp_dur = 8.0
                     theta_des = smooth_ramp(phase_dt, 0, ramp_dur,
@@ -562,20 +588,20 @@ def run_grasp():
 
             elif current_phase == 3:
                 ramp_dur = 8.0
-                if GRASP_METHOD == 'hybrid':
+                if _method == 'hybrid':
                     # Drone moves to HOVER[3], arm tracks live IK simultaneously
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
                     ik_live = arm_ik(st['pos'], BOX_TARGET)
                     if ik_live is not None:
                         theta_des = np.array(ik_live)
 
-                elif GRASP_METHOD == 'arm_only':
+                elif _method == 'arm_only':
                     # Drone holds position, arm ramps from folded to IK solution
                     hover_des = hover_prev.copy()
                     theta_des = smooth_ramp(phase_dt, 0, ramp_dur,
                                             _arm_only_theta_start, _arm_only_theta_end)
 
-                elif GRASP_METHOD == 'drone_only':
+                elif _method == 'drone_only':
                     # Arm already at S2_JOINTS from phase 2; only drone moves
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, _s2_hover)
                     theta_des = S2_JOINTS.copy()
@@ -591,9 +617,6 @@ def run_grasp():
                 ramp_dur = 3.0
                 hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[5])
                 gripper_close = True
-                box_pos = get_box_pos(model, data)
-                # if phase_dt > 2.0 and phase_dt < 2.1:
-                #     print(f'    Box z = {box_pos[2]:.3f} (started at 1.125)')
 
             elif current_phase == 6:
                 # TRANSPORT: smooth ramp to drop-off
@@ -616,6 +639,10 @@ def run_grasp():
                 theta_des[0] = smooth_ramp(phase_dt, 0, ramp_dur, _retract_start[0], 0.0)
                 theta_des[1] = smooth_ramp(phase_dt, 0, ramp_dur, _retract_start[1], 0.0)
 
+            # Once the gripper closes in phase 4 it never opens again
+            if current_phase >= 4:
+                gripper_close = True
+
             # --- Apply controls ---
             # Drone PID
             T, tau = ctrl.compute(
@@ -633,23 +660,43 @@ def run_grasp():
             # Step
             mujoco.mj_step(model, data)
 
-            # Real-time sync
-            sim_elapsed = data.time - t0_sim
-            wall_elapsed = time.perf_counter() - t0_wall
-            if sim_elapsed > wall_elapsed:
-                time.sleep(sim_elapsed - wall_elapsed)
-
-            viewer.sync()
+            # Real-time sync (only when viewer is open)
+            if viewer_ctx is not None:
+                sim_elapsed = data.time - t0_sim[0]
+                wall_elapsed = time.perf_counter() - t0_wall[0]
+                if sim_elapsed > wall_elapsed:
+                    time.sleep(sim_elapsed - wall_elapsed)
+                viewer_ctx.sync()
 
         # Final report
         box_pos = get_box_pos(model, data)
         print(f'\nDone. Final box position: {box_pos}')
-        print('Close viewer to exit.')
-        while viewer.is_running():
-            time.sleep(0.05)
+        if viewer_ctx is not None:
+            print('Close viewer to exit.')
+            while viewer_ctx.is_running():
+                time.sleep(0.05)
 
-    plot_trajectories(log)
-    plot_approach_phase(log)
+    if use_viewer:
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            viewer.sync()
+            print('Simulation frozen for 1 s — reposition the window now...')
+            _freeze_end = time.perf_counter() + 1.0
+            while time.perf_counter() < _freeze_end:
+                viewer.sync()
+                time.sleep(0.05)
+            print('Starting simulation.')
+            t0_wall[0] = time.perf_counter()
+            t0_sim[0] = data.time
+            _run_sim(viewer)
+    else:
+        t0_sim[0] = data.time
+        _run_sim(None)
+
+    if plot:
+        plot_trajectories(log)
+        plot_approach_phase(log)
+
+    return log
 
 
 if __name__ == '__main__':

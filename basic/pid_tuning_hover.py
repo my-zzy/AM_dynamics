@@ -72,7 +72,7 @@ HOVER_START     = np.array([0.0, 0.0, 1.0])   # start hover position [m]
 TARGET          = np.array([1.0, 0.0, 2.0])   # EE target position [m]  (drone base target derived at runtime)
 YAW_TARGET      = np.deg2rad(0.0)             # desired yaw at target  [rad]
 
-HOVER_START_DUR = 3.0   # hover at start before moving    [s]
+HOVER_START_DUR = 8.0   # hover at start before moving    [s]
 P2P_RAMP        = 5.0   # cosine ramp duration             [s]
 P2P_DURATION    = 5.0   # hover at target after arrival    [s]
 
