@@ -1,27 +1,32 @@
-"""Robustness sweep: wind disturbance and mass uncertainty.
+"""Robustness sweep: wind disturbance, mass uncertainty, actuator delay, sensor noise.
 
 Tests three methods (arm_only, drone_only, mpc) against:
   1. Lateral wind force  (0 → 1.0 N in X direction)
   2. Mass scale factor   (0.80 → 1.20, i.e. ±20%)
-
-Both tests can be run independently or together.
+  3. Actuator delay      (0 → 200 ms)
+  4. Sensor noise std    (0 → 50 mm position std)
 
 Run from workspace root:
     conda activate main
     # Wind sweep (PID only, fast):
     python demo/robustness_test.py --test wind
-    # Mass sweep (PID only, fast):
+    # Mass sweep:
     python demo/robustness_test.py --test mass
+    # Actuator delay sweep:
+    python demo/robustness_test.py --test delay
+    # Sensor noise sweep:
+    python demo/robustness_test.py --test noise
     # Include MPC (slow — acados required):
     python demo/robustness_test.py --test wind --mpc
-    python demo/robustness_test.py --test mass --mpc
-    # Both sweeps, all methods:
+    # All sweeps, all methods:
     python demo/robustness_test.py --test all --mpc
 
 Output
 ------
-  demo/robustness_wind.png   — success rate and min EE error vs wind magnitude
-  demo/robustness_mass.png   — same vs mass scale factor
+  demo/robustness_wind.png    — success rate and min EE error vs wind magnitude
+  demo/robustness_mass.png    — same vs mass scale factor
+  demo/robustness_delay.png   — same vs actuator delay
+  demo/robustness_noise.png   — same vs sensor noise std
   demo/robustness_results.npz — raw results for further analysis
 """
 
@@ -49,6 +54,12 @@ WIND_LEVELS = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
 # Mass scale sweep: fraction of nominal mass
 MASS_LEVELS = np.array([0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20])
 
+# Actuator delay sweep [seconds]
+DELAY_LEVELS = np.array([0.0, 0.01, 0.02, 0.05, 0.10, 0.20])
+
+# Sensor noise std sweep [metres] — scales all sensor noise proportionally
+NOISE_LEVELS = np.array([0.0, 0.005, 0.010, 0.020, 0.050])
+
 # Phase IDs used by each method's log
 _PID_APPROACH = 3
 _PID_LIFT     = 5
@@ -59,7 +70,8 @@ _MPC_LIFT     = 4
 # Single-trial runner
 # ---------------------------------------------------------------------------
 
-def run_pid_trial(method, wind_force=None, mass_scale=1.0):
+def run_pid_trial(method, wind_force=None, mass_scale=1.0,
+                  actuator_delay=0.0, sensor_noise_std=0.0):
     """Run one PID trial and return (metrics_dict, grasp_success)."""
     log = run_grasp(
         method=method,
@@ -67,6 +79,8 @@ def run_pid_trial(method, wind_force=None, mass_scale=1.0):
         plot=False,
         wind_force=wind_force,
         mass_scale=mass_scale,
+        actuator_delay=actuator_delay,
+        sensor_noise_std=sensor_noise_std,
     )
     if not log or not log['t']:
         return None, False
@@ -78,7 +92,8 @@ def run_pid_trial(method, wind_force=None, mass_scale=1.0):
 
 
 def run_mpc_trial(wind_force=None, mass_scale=1.0,
-                  dt_mpc=0.05, N=20, rebuild=False):
+                  dt_mpc=0.05, N=20, rebuild=False,
+                  actuator_delay=0.0, sensor_noise_std=0.0):
     """Run one MPC trial and return (metrics_dict, grasp_success)."""
     from demo.mpc_grasp_task import run_mpc_grasp
     log = run_mpc_grasp(
@@ -87,6 +102,8 @@ def run_mpc_trial(wind_force=None, mass_scale=1.0,
         use_viewer=False, plot=False,
         wind_force=wind_force,
         mass_scale=mass_scale,
+        actuator_delay=actuator_delay,
+        sensor_noise_std=sensor_noise_std,
     )
     if not log or not log['t']:
         return None, False
@@ -201,6 +218,109 @@ def run_mass_sweep(run_mpc=False, mpc_kwargs=None, save_dir=None):
 
 
 # ---------------------------------------------------------------------------
+# Actuator delay sweep
+# ---------------------------------------------------------------------------
+
+def run_delay_sweep(run_mpc=False, mpc_kwargs=None, save_dir=None):
+    """Sweep actuator delay for all methods.
+
+    Returns
+    -------
+    results : dict  keyed by method name, each value is a list of metric
+              dicts (one per delay level in DELAY_LEVELS).
+    """
+    mpc_kw = mpc_kwargs or {}
+    methods_pid = ['arm_only', 'drone_only']
+    all_methods = methods_pid + (['mpc'] if run_mpc else [])
+
+    results = {m: [] for m in all_methods}
+
+    print('\n' + '=' * 60)
+    print('ACTUATOR DELAY SWEEP')
+    print('  Levels (s):', DELAY_LEVELS)
+    print('  Methods   :', all_methods)
+    print('=' * 60)
+
+    for di, delay in enumerate(DELAY_LEVELS):
+        print(f'\n--- Actuator delay {delay*1000:.0f} ms ---')
+
+        for method in methods_pid:
+            print(f'  [{method}] ', end='', flush=True)
+            m, ok = run_pid_trial(method, actuator_delay=delay)
+            results[method].append(m)
+            if m:
+                print(f'success={ok}  ee_min={m["ee_min_error_mm"]:.1f} mm  '
+                      f'tilt={m["max_tilt_deg"]:.1f}°')
+            else:
+                print('FAILED (no log)')
+
+        if run_mpc:
+            print('  [mpc] ', end='', flush=True)
+            m, ok = run_mpc_trial(actuator_delay=delay, **mpc_kw)
+            results['mpc'].append(m)
+            if m:
+                print(f'success={ok}  ee_min={m["ee_min_error_mm"]:.1f} mm  '
+                      f'tilt={m["max_tilt_deg"]:.1f}°')
+            else:
+                print('FAILED (no log)')
+
+    _plot_robustness(results, DELAY_LEVELS * 1000, x_label='Actuator delay [ms]',
+                     fname='robustness_delay.png', save_dir=save_dir)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Sensor noise sweep
+# ---------------------------------------------------------------------------
+
+def run_noise_sweep(run_mpc=False, mpc_kwargs=None, save_dir=None):
+    """Sweep sensor noise std for all methods.
+
+    Returns
+    -------
+    results : dict  keyed by method name.
+    """
+    mpc_kw = mpc_kwargs or {}
+    methods_pid = ['arm_only', 'drone_only']
+    all_methods = methods_pid + (['mpc'] if run_mpc else [])
+
+    results = {m: [] for m in all_methods}
+
+    print('\n' + '=' * 60)
+    print('SENSOR NOISE SWEEP')
+    print('  Levels (m):', NOISE_LEVELS)
+    print('  Methods   :', all_methods)
+    print('=' * 60)
+
+    for ni, noise in enumerate(NOISE_LEVELS):
+        print(f'\n--- Sensor noise std {noise*1000:.1f} mm ---')
+
+        for method in methods_pid:
+            print(f'  [{method}] ', end='', flush=True)
+            m, ok = run_pid_trial(method, sensor_noise_std=noise)
+            results[method].append(m)
+            if m:
+                print(f'success={ok}  ee_min={m["ee_min_error_mm"]:.1f} mm  '
+                      f'tilt={m["max_tilt_deg"]:.1f}°')
+            else:
+                print('FAILED (no log)')
+
+        if run_mpc:
+            print('  [mpc] ', end='', flush=True)
+            m, ok = run_mpc_trial(sensor_noise_std=noise, **mpc_kw)
+            results['mpc'].append(m)
+            if m:
+                print(f'success={ok}  ee_min={m["ee_min_error_mm"]:.1f} mm  '
+                      f'tilt={m["max_tilt_deg"]:.1f}°')
+            else:
+                print('FAILED (no log)')
+
+    _plot_robustness(results, NOISE_LEVELS * 1000, x_label='Sensor noise std [mm]',
+                     fname='robustness_noise.png', save_dir=save_dir)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
@@ -310,7 +430,9 @@ def print_robustness_table(results, x_vals, sweep_name):
 
 def _parse_args():
     p = argparse.ArgumentParser(description='Robustness sweep for grasp methods')
-    p.add_argument('--test', choices=['wind', 'mass', 'all'], default='all',
+    p.add_argument('--test',
+                   choices=['wind', 'mass', 'delay', 'noise', 'all'],
+                   default='all',
                    help='Which sweep to run (default: all)')
     p.add_argument('--mpc',  action='store_true',
                    help='Also test the MPC method (requires acados)')
@@ -331,8 +453,10 @@ if __name__ == '__main__':
     mpc_kw = dict(dt_mpc=args.dt_mpc, N=args.N, rebuild=args.rebuild)
     run_mpc = args.mpc
 
-    wind_results = None
-    mass_results = None
+    wind_results  = None
+    mass_results  = None
+    delay_results = None
+    noise_results = None
 
     if args.test in ('wind', 'all'):
         wind_results = run_wind_sweep(run_mpc=run_mpc,
@@ -346,12 +470,28 @@ if __name__ == '__main__':
                                       save_dir=args.save_dir)
         print_robustness_table(mass_results, MASS_LEVELS, 'Mass scale')
 
+    if args.test in ('delay', 'all'):
+        delay_results = run_delay_sweep(run_mpc=run_mpc,
+                                        mpc_kwargs=mpc_kw,
+                                        save_dir=args.save_dir)
+        print_robustness_table(delay_results, DELAY_LEVELS * 1000, 'Actuator delay [ms]')
+
+    if args.test in ('noise', 'all'):
+        noise_results = run_noise_sweep(run_mpc=run_mpc,
+                                        mpc_kwargs=mpc_kw,
+                                        save_dir=args.save_dir)
+        print_robustness_table(noise_results, NOISE_LEVELS * 1000, 'Sensor noise std [mm]')
+
     # Save raw data
     out_dir  = args.save_dir or os.path.dirname(__file__)
     npz_path = os.path.join(out_dir, 'robustness_results.npz')
     np.savez(npz_path,
              wind_levels=WIND_LEVELS,
              mass_levels=MASS_LEVELS,
+             delay_levels=DELAY_LEVELS,
+             noise_levels=NOISE_LEVELS,
              wind_results=wind_results,
-             mass_results=mass_results)
+             mass_results=mass_results,
+             delay_results=delay_results,
+             noise_results=noise_results)
     print(f'Raw results saved → {npz_path}')

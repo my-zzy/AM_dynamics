@@ -402,7 +402,8 @@ GAINS = dict(
 
 
 def run_grasp(method=None, use_viewer=True, plot=True,
-              wind_force=None, mass_scale=1.0):
+              wind_force=None, mass_scale=1.0,
+              actuator_delay=0.0, sensor_noise_std=0.0):
     """Run the grasp task simulation.
 
     Parameters
@@ -457,6 +458,33 @@ def run_grasp(method=None, use_viewer=True, plot=True,
     _j2_dof = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
     _base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'base')
     _wind    = np.asarray(wind_force, dtype=float) if wind_force is not None else None
+
+    # ---------------------------------------------------------------------------
+    # Sensor noise helper
+    # ---------------------------------------------------------------------------
+    def _add_noise(st):
+        """Return a shallow copy of state dict with Gaussian noise on each field."""
+        if sensor_noise_std <= 0.0:
+            return st
+        s = {k: v.copy() for k, v in st.items()}
+        s['pos']       += np.random.normal(0.0, sensor_noise_std,         3)
+        s['vel']       += np.random.normal(0.0, sensor_noise_std * 2.0,   3)
+        dq              = np.random.normal(0.0, sensor_noise_std * 0.1,   4)
+        q               = s['quat'] + dq
+        s['quat']       = q / np.linalg.norm(q)
+        s['omega']      += np.random.normal(0.0, sensor_noise_std * 2.0,  3)
+        s['theta']      += np.random.normal(0.0, sensor_noise_std * 0.5,  2)
+        s['theta_dot']  += np.random.normal(0.0, sensor_noise_std * 1.0,  2)
+        return s
+
+    # ---------------------------------------------------------------------------
+    # Actuator delay buffer
+    # ---------------------------------------------------------------------------
+    from collections import deque as _deque
+    _delay_steps = max(0, int(round(actuator_delay / dt)))
+    # Pre-fill with zeros so the first _delay_steps steps apply zero control
+    _ctrl_buf = _deque([np.zeros(model.nu)] * _delay_steps,
+                       maxlen=_delay_steps + 1) if _delay_steps > 0 else None
 
     # Reset — place drone on the ground
     mujoco.mj_resetData(model, data)
@@ -541,7 +569,7 @@ def run_grasp(method=None, use_viewer=True, plot=True,
 
                 # arm_only: lock in IK target once at phase 3 start
                 if current_phase == 3 and _method == 'arm_only':
-                    ik_ao = arm_ik(hover_prev, BOX_TARGET)
+                    ik_ao = arm_ik(sc['pos'], BOX_TARGET)
                     if ik_ao is None:
                         print('  WARNING: arm_only IK unreachable — drone too far from box')
                     else:
@@ -558,6 +586,7 @@ def run_grasp(method=None, use_viewer=True, plot=True,
                           f'→ {np.rad2deg(S2_JOINTS)} deg  (over phase 2)')
 
             st = get_grasp_state(model, data)
+            sc = _add_noise(st)   # noisy state fed to controllers
             phase_dt = t - phase_t0
 
             # Record trajectory
@@ -610,7 +639,7 @@ def run_grasp(method=None, use_viewer=True, plot=True,
                 if _method == 'hybrid':
                     # Drone moves to HOVER[3], arm tracks live IK simultaneously
                     hover_des = smooth_ramp(phase_dt, 0, ramp_dur, hover_prev, HOVER[3])
-                    ik_live = arm_ik(st['pos'], BOX_TARGET)
+                    ik_live = arm_ik(sc['pos'], BOX_TARGET)
                     if ik_live is not None:
                         theta_des = np.array(ik_live)
 
@@ -662,19 +691,24 @@ def run_grasp(method=None, use_viewer=True, plot=True,
             if current_phase >= 4:
                 gripper_close = True
 
-            # --- Apply controls ---
+            # --- Apply controls (using noisy state sc) ---
             # Drone PID
             T, tau = ctrl.compute(
-                st['pos'], st['vel'], st['quat'], st['omega'],
+                sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                 hover_des, 0.0, dt)
             apply_platform_control(data, T, tau)
 
             # Arm PD + gravity feedforward
             arm_bias = np.array([data.qfrc_bias[_j1_dof], data.qfrc_bias[_j2_dof]])
-            apply_arm_pd(data, theta_des, st['theta'], st['theta_dot'], bias=arm_bias)
+            apply_arm_pd(data, theta_des, sc['theta'], sc['theta_dot'], bias=arm_bias)
 
             # Gripper
             apply_gripper(data, close=gripper_close)
+
+            # Actuator delay: buffer freshly-computed ctrl, apply delayed version
+            if _ctrl_buf is not None:
+                _ctrl_buf.append(data.ctrl.copy())
+                data.ctrl[:] = _ctrl_buf[0]
 
             # External wind disturbance on drone body
             if _wind is not None:

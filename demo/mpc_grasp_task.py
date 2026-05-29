@@ -335,7 +335,8 @@ def plot_mpc_reach_phase(log):
 def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                   enable_terminal_constraint=True,
                   use_viewer=True, plot=True,
-                  wind_force=None, mass_scale=1.0):
+                  wind_force=None, mass_scale=1.0,
+                  actuator_delay=0.0, sensor_noise_std=0.0):
     """Run the MPC grasp task.
 
     Parameters
@@ -383,6 +384,32 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
         mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, 'joint2')]
     _base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'base')
     _wind    = np.asarray(wind_force, dtype=float) if wind_force is not None else None
+
+    # ---------------------------------------------------------------------------
+    # Sensor noise helper
+    # ---------------------------------------------------------------------------
+    def _add_noise(st):
+        """Return a copy of state dict with Gaussian noise added to each field."""
+        if sensor_noise_std <= 0.0:
+            return st
+        s = {k: v.copy() for k, v in st.items()}
+        s['pos']       += np.random.normal(0.0, sensor_noise_std,         3)
+        s['vel']       += np.random.normal(0.0, sensor_noise_std * 2.0,   3)
+        dq              = np.random.normal(0.0, sensor_noise_std * 0.1,   4)
+        q               = s['quat'] + dq
+        s['quat']       = q / np.linalg.norm(q)
+        s['omega']      += np.random.normal(0.0, sensor_noise_std * 2.0,  3)
+        s['theta']      += np.random.normal(0.0, sensor_noise_std * 0.5,  2)
+        s['theta_dot']  += np.random.normal(0.0, sensor_noise_std * 1.0,  2)
+        return s
+
+    # ---------------------------------------------------------------------------
+    # Actuator delay buffer
+    # ---------------------------------------------------------------------------
+    from collections import deque as _deque
+    _delay_steps = max(0, int(round(actuator_delay / sim_dt)))
+    _ctrl_buf = _deque([np.zeros(mj_model.nu)] * _delay_steps,
+                       maxlen=_delay_steps + 1) if _delay_steps > 0 else None
 
     # Reset
     mujoco.mj_resetData(mj_model, mj_data)
@@ -544,9 +571,10 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
 
             t  = mj_data.time - t0_sim
             st = get_grasp_state(mj_model, mj_data)
+            sc = _add_noise(st)   # noisy state fed to controllers
             bias = np.array([mj_data.qfrc_bias[_j1_dof],
                              mj_data.qfrc_bias[_j2_dof]])
-            p_ee_fk = ee_pos_from_state(am_model, st)
+            p_ee_fk = ee_pos_from_state(am_model, st)  # clean, for logging/phase logic
 
             # Trajectory logging
             log['t'].append(t)
@@ -577,10 +605,10 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 gripper_close = False
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
@@ -594,10 +622,10 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 gripper_close = False
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
@@ -608,7 +636,7 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
 
                 # Run NMPC solve at dt_mpc rate
                 if mpc_step_counter % mpc_steps_per_solve == 0:
-                    x_now = pack_state(st)
+                    x_now = pack_state(sc)
                     try:
                         u0_new, info = mpc_ctrl.solve(x_now, t_mpc)
                         last_u0 = u0_new
@@ -646,11 +674,11 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 gripper_close = elapsed > 0.3
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_prev, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
                 # Hold arm at its current IK angles via PD
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=gripper_close)
 
             # ----------------------------------------------------------------
@@ -663,12 +691,12 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                         np.array([HOVER_PRE_MPC[0], 0.0, LIFT_Z]))
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
 
                 # Hold arm at its frozen pose (set in enter_phase)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
@@ -680,10 +708,10 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                         hover_prev, HOVER[6])   # HOVER[6] = drop-off
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
@@ -695,10 +723,10 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                                         hover_prev, HOVER[7])
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=True)
 
             # ----------------------------------------------------------------
@@ -712,15 +740,20 @@ def run_mpc_grasp(dt_mpc=0.05, N=20, rebuild=False,
                 theta_des[1] = smooth_ramp(elapsed, 0, ramp_dur, _retract_start[1], 0.0)
                 clear_mpc_forces(mj_model, mj_data)
 
-                T, tau = pid.compute(st['pos'], st['vel'], st['quat'], st['omega'],
+                T, tau = pid.compute(sc['pos'], sc['vel'], sc['quat'], sc['omega'],
                                      hover_des, 0.0, sim_dt)
                 apply_platform_control(mj_data, T, tau)
-                apply_arm_pd(mj_data, theta_des, st['theta'], st['theta_dot'], bias=bias)
+                apply_arm_pd(mj_data, theta_des, sc['theta'], sc['theta_dot'], bias=bias)
                 apply_gripper(mj_data, close=False)
 
             # ----------------------------------------------------------------
             # Advance simulation
             # ----------------------------------------------------------------
+            # Actuator delay: buffer freshly-computed ctrl, apply delayed version
+            if _ctrl_buf is not None:
+                _ctrl_buf.append(mj_data.ctrl.copy())
+                mj_data.ctrl[:] = _ctrl_buf[0]
+
             # Wind disturbance: added on top of whatever xfrc_applied holds
             # (MPC phases: adds to MPC body wrench; PID phases: adds to zero)
             if _wind is not None:
