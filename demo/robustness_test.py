@@ -49,16 +49,16 @@ from demo.compare_methods import compute_metrics
 # ---------------------------------------------------------------------------
 
 # Wind sweep: lateral force in world X direction [N]
-WIND_LEVELS = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+WIND_LEVELS = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
 
 # Mass scale sweep: fraction of nominal mass
 MASS_LEVELS = np.array([0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20])
 
 # Actuator delay sweep [seconds]
-DELAY_LEVELS = np.array([0.0, 0.01, 0.02, 0.05, 0.10, 0.20])
+DELAY_LEVELS = np.array([0.0, 0.005, 0.01, 0.015, 0.020, 0.025])
 
 # Sensor noise std sweep [metres] — scales all sensor noise proportionally
-NOISE_LEVELS = np.array([0.0, 0.005, 0.010, 0.020, 0.050])
+NOISE_LEVELS = np.array([0.0, 0.001, 0.002, 0.003, 0.004, 0.005])
 
 # Phase IDs used by each method's log
 _PID_APPROACH = 3
