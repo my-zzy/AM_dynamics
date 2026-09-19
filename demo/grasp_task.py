@@ -4,7 +4,7 @@ Run from workspace root:
     conda activate main
     python demo/grasp_task.py
 
-Phases (see demo/grasp.md for full design):
+Phases (see docs/grasp.md for full design):
     0  TAKEOFF     ramp from ground to hover setpoint
     1  INIT        stabilise hover
     2  ARM READY   hold arm at initial angle, open gripper
@@ -50,7 +50,7 @@ KP_ARM = 8.0
 KD_ARM = 0.8
 
 # ---------------------------------------------------------------------------
-# IK  (updated sign convention — see grasp.md)
+# IK  (updated sign convention — see docs/grasp.md)
 # ---------------------------------------------------------------------------
 
 def arm_ik(base_pos, target_pos):

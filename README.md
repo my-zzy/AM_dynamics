@@ -14,11 +14,11 @@ simulator and physics validator throughout.
 ## Contents
 
 - [Repository layout](#repository-layout)
-- [Environment setup](#environment-setup)
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
 - [Useful scripts and usage](#useful-scripts-and-usage)
   - [MPC demo](#mpc-demo)
   - [PID demo](#pid-demo)
-  - [Basic experiments](#basic-experiments)
   - [Validation](#validation)
 - [Model reference](#model-reference)
   - [XML geometry](#xml-geometry)
@@ -42,33 +42,154 @@ ams/                        Core analytical model (pure Python + CasADi)
 ├── math_utils.py           Quaternion utilities, skew-symmetric, etc.
 └── inertia_check.py        Validation: model.py vs MuJoCo XML mass/inertia
 
-basic/                      MuJoCo experiments (PID baseline, model inspection)
+basic/                      MuJoCo models, shared helpers, and PID controller
 ├── model/
 │   ├── am_robot.xml        Full aerial manipulator MuJoCo model (ground truth)
 │   └── quad_only.xml       Quadrotor body only (no arm)
 ├── test_model.py           Load and inspect the MuJoCo model
-├── arm_test.py             Joint tracking test (fixed base)
-├── arm_effect.py           Arm-swing effect on free-floating drone
-├── pid_controller.py       PID controller implementation
-├── pid_demo.py             Real-time PID position demo with waypoints
-├── pid_tuning.py           PID tuning (full AM model, p2p / figure-8)
-└── pid_tuning_quad.py      PID tuning (quad-only model, no arm)
+└── pid_controller.py       PID controller implementation
 
 demo/                       Nonlinear MPC (acados)
 ├── mpc_controller.py       Acados OCP setup + SQP solver (MPCController class)
 ├── mpc_trajectory.py       Minimum-jerk EE trajectory generator
 ├── mpc_reach_test.py       Main MPC reach test: hover → reach → hold
-├── mpc_single_step_debug.py  One-shot MPC diagnostic + plots
 ├── mpc_grasp_task.py       Full pick-and-place with NMPC
 ├── grasp_task.py           Pick-and-place with decoupled PID + arm-PD
 └── grasp_scene.xml         MuJoCo scene with target object
 
-adrc/                       ADRC controller notes (design documents)
+docs/                       Model derivations, code guides, and controller design notes
 README.md                   This file
 ```
 
+Documentation:
+
+- [Dynamics derivation](docs/dynamics.md) and [code organization](docs/code_guide.md)
+- [MuJoCo tutorial](docs/mjc_tutorial.md), [MPC integration notes](docs/mpc_mjc.md), and [CasADi port guide](docs/casadi_code_guide.md)
+- [PID grasp design](docs/grasp.md) and [NMPC grasp plan](docs/mpc_grasp_plan.md)
+- [ADRC position control](docs/adrc_pos_base.md) and [backstepping attitude control](docs/bs_att_base.md)
+
+
 ---
 
+
+## Requirements
+
+Dependencies depend on which part of the repository you run:
+
+| Workflow | Requirements |
+|----------|--------------|
+| Analytical model (`ams/`, excluding symbolic dynamics and MuJoCo checks) | Python 3 and NumPy |
+| MuJoCo validation, PID demos, and plots | NumPy, `mujoco`, Matplotlib |
+| Symbolic dynamics (`ams/casadi_dynamics.py`) | NumPy and CasADi |
+| NMPC demos | All of the above, compiled acados libraries, and `acados_template` |
+| MPC reach video recording (`--record`) | Additionally `imageio[ffmpeg]` and a working rendering backend |
+
+The repository does not currently pin Python/package versions or an acados
+revision, so there is no verified compatibility matrix. Use an isolated Python
+environment; the Conda names in older script comments (`main`, `mjc`, `gz`) are
+local environment names, not required environments.
+
+Interactive demos need a desktop display and working OpenGL. The MuJoCo Python
+package includes the MuJoCo library. On macOS, run passive-viewer scripts with
+`mjpython` in place of `python`; see the [MuJoCo Python documentation](https://mujoco.readthedocs.io/en/stable/python.html).
+
+## Getting started
+
+### 1. Install the base environment
+
+From the repository root (`AM_dynamics/`), using a POSIX shell:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install numpy mujoco matplotlib
+```
+
+An existing Conda environment works too; activate it and run the same package
+installation command. No editable project installation is currently needed
+(or configured). Keep running the commands below from the repository root.
+
+### 2. Check the model, then run a PID demo
+
+These checks do not open a viewer:
+
+```bash
+python basic/test_model.py
+python ams/inertia_check.py
+```
+
+The first command prints model information and basic simulation diagnostics.
+The second compares analytical mass/inertia and end-effector kinematics against
+the XML. Inspect its `OK` / `MISMATCH` output; it reports discrepancies rather
+than enforcing a failing process exit status.
+
+On a machine with a display, run the PID grasp task:
+
+```bash
+python demo/grasp_task.py
+```
+
+For a PID-only comparison without a viewer or interactive plot windows:
+
+```bash
+MPLBACKEND=Agg python demo/compare_methods.py
+```
+
+Comparison figures are written to `demo/` by default. Many experiments overwrite
+fixed output filenames, so preserve previous results before rerunning them.
+
+### 3. Add symbolic dynamics and NMPC (optional)
+
+Install CasADi in the same environment:
+
+```bash
+python -m pip install casadi
+```
+
+For NMPC, build acados separately from this repository. The Linux example below
+requires Git, CMake, Make, and a C/C++ compiler. Follow the official
+[acados installation guide](https://docs.acados.org/installation/index.html)
+and [Python interface setup](https://docs.acados.org/python_interface/index.html)
+for platform-specific details.
+
+```bash
+# Choose a persistent location outside AM_dynamics for the acados checkout.
+export ACADOS_SOURCE_DIR="$HOME/acados"
+git clone --recursive https://github.com/acados/acados.git "$ACADOS_SOURCE_DIR"
+cmake -S "$ACADOS_SOURCE_DIR" -B "$ACADOS_SOURCE_DIR/build" -DBUILD_SHARED_LIBS=ON
+cmake --build "$ACADOS_SOURCE_DIR/build" --target install -j4
+python -m pip install -e "$ACADOS_SOURCE_DIR/interfaces/acados_template"
+export LD_LIBRARY_PATH="$ACADOS_SOURCE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+If acados is already installed, point `ACADOS_SOURCE_DIR` at that checkout and
+install its Python interface into the active environment. Reapply the environment
+variables in new shells. The first solver generation may prompt to download the
+Tera renderer; follow the linked Python-interface instructions if it is missing.
+
+Back at the repository root, check imports and run the reach experiment:
+
+```bash
+python -c "import casadi; from acados_template import AcadosOcpSolver"
+MPLBACKEND=Agg python demo/mpc_reach_test.py --rebuild --no-viewer
+```
+
+The first run generates and compiles a solver in
+`demo/acados_generated_am_mpc/`. Use `--rebuild` after changing the dynamics,
+horizon, or OCP configuration. Omit `--no-viewer` and `MPLBACKEND=Agg` for an
+interactive run. Import success alone does not verify solver compilation.
+
+Optional video support:
+
+```bash
+python -m pip install "imageio[ffmpeg]"
+python demo/mpc_reach_test.py --record
+```
+
+Recording still requires rendering support, even with `--no-viewer`.
+
+---
 
 ## Useful scripts and usage
 
@@ -77,7 +198,7 @@ All commands are run from the **workspace root** (`AM_dynamics/`).
 
 ### MPC demo
 
-> Requires conda environments and acados installed with `ACADOS_SOURCE_DIR` set.
+> Requires the optional NMPC setup above, including `ACADOS_SOURCE_DIR`.
 
 
 #### `demo/mpc_reach_test.py`
@@ -122,40 +243,6 @@ python demo/grasp_task.py
 ![](figs/drone_only_grasp/grasp_trajectory.png)
 
 ---
-
-### Basic experiments
-
-#### `basic/arm_test.py`
-Joint tracking test with the drone base **fixed** in space. Drives both joints
-through step, sine, or ramp references via a PD controller and plots
-position/velocity tracking.
-
-Edit TEST_MODE = 'step' | 'sine' | 'ramp' at the top of the file.
-
-#### `basic/arm_effect.py`
-Free-float demo: constant hover thrust applied as `xfrc_applied`, arm swings
-sinusoidally. Shows how arm motion causes base drift.  Opens the MuJoCo viewer
-and saves `basic/arm_effect.png` on exit.
-
-#### `basic/pid_demo.py`
-Real-time MuJoCo viewer demo. PID position controller flies the AM through a
-waypoint sequence (take-off → forward → sideways → climb → return → land).
-
-#### `basic/pid_tuning.py`
-Interactive PID tuning loop for the full AM model. Runs a trajectory (p2p or
-figure-8), opens the viewer, saves position/attitude plots when the viewer
-closes. Edit `GAINS` at the top of the file to tune.
-
-```bash
-python basic/pid_tuning.py --mode p2p/figure8
-```
-
-#### `basic/pid_tuning_quad.py`
-Same as above but loads `quad_only.xml` — useful for tuning the drone gains
-in isolation before adding the arm.
-
----
-
 
 ### Validation
 
@@ -245,13 +332,13 @@ mount_rotation = np.array([
 ])
 ```
 
-See [demo/README.md](demo/README.md) for the full derivation.
+See [ams/model.py](ams/model.py) for the implemented transforms and frame conventions.
 
 ---
 
 ### Gravity compensation at zero config
 
-To hold the L-shape hover statically, three inputs must be set to their
+To hold the L-shape hover statically, four input components must be set to their
 non-zero equilibrium values:
 
 | Input       | Value         | Reason |
